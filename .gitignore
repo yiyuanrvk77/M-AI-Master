@@ -1,0 +1,11 @@
+backend/.env
+backend/server.stdout.log
+backend/server.stderr.log
+__pycache__/
+backend/__pycache__/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+*.log
+*.py[cod]
+**/__pycache__/

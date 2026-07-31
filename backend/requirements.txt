@@ -1,0 +1,10 @@
+# Web runtime
+Flask>=3.1,<4
+gunicorn>=22,<24
+requests>=2.32,<3
+
+# Data processing and governance
+numpy>=1.26,<3
+pandas>=2.2,<4
+scikit-learn>=1.4,<2
+chardet>=5.2,<8

@@ -7,22 +7,26 @@ cache only so the existing single-page UI can render and export data quickly.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import json
 import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import chardet
+import networkx as nx
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 from sklearn.ensemble import IsolationForest
 
 
@@ -46,25 +50,77 @@ def _load_local_env(path: Path) -> None:
 
 _load_local_env(BASE_DIR / ".env")
 PROJECT_DIR = BASE_DIR.parent
-FRONTEND_DIR = Path(os.environ.get("MDM_FRONTEND_DIR", BASE_DIR))
+
+
+def _config_path(name: str, default: Path) -> Path:
+    path = Path(os.environ.get(name, str(default))).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+FRONTEND_DIR = _config_path("MDM_FRONTEND_DIR", BASE_DIR)
 FRONTEND_FILE = os.environ.get("MDM_FRONTEND_FILE", "index.html")
-DB_PATH = Path(os.environ.get("MDM_DB_PATH", BASE_DIR / "mdm_data.db"))
+DB_PATH = _config_path("MDM_DB_PATH", BASE_DIR / "mdm_data.db")
 MAX_RECORDS = int(os.environ.get("MDM_MAX_RECORDS", "10000"))
+APP_VERSION = "4.1"
+AUTH_USER = os.environ.get("MDM_AUTH_USER", "admin").strip() or "admin"
+AUTH_PASSWORD = os.environ.get("MDM_AUTH_PASSWORD", "")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MDM_MAX_UPLOAD_BYTES", 20 * 1024 * 1024))
+app.json.ensure_ascii = False
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("mai-master")
+if os.environ.get("MDM_LOG_DIR"):
+    log_dir = _config_path("MDM_LOG_DIR", BASE_DIR / "logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        log_dir / "mai-master.log", maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8"
+    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(file_handler)
+
+
+@app.before_request
+def attach_trace_context():
+    g.trace_id = request.headers.get("X-Trace-Id") or f"TRC-{uuid.uuid4().hex[:16].upper()}"
+    g.request_started = time.perf_counter()
+    if AUTH_PASSWORD and request.path != "/api/health":
+        auth = request.authorization
+        valid_user = bool(auth) and hmac.compare_digest(auth.username or "", AUTH_USER)
+        valid_password = bool(auth) and hmac.compare_digest(auth.password or "", AUTH_PASSWORD)
+        if not (valid_user and valid_password):
+            response = jsonify({"error": "authentication required", "trace_id": g.trace_id})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = 'Basic realm="M-AI Master", charset="UTF-8"'
+            return response
+
+
+@app.after_request
+def attach_trace_headers(response):
+    elapsed_ms = round((time.perf_counter() - getattr(g, "request_started", time.perf_counter())) * 1000, 2)
+    response.headers["X-Trace-Id"] = getattr(g, "trace_id", "")
+    response.headers["X-Response-Time-Ms"] = str(elapsed_ms)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        logger.info(
+            "%s %s status=%s duration_ms=%s trace_id=%s remote=%s",
+            request.method, request.path, response.status_code, elapsed_ms,
+            getattr(g, "trace_id", ""), request.remote_addr or "-",
+        )
+    return response
 
 
 FIELD_ALIASES = {
-    "material_code": ["物料编码", "编码", "物料号", "物料代码", "material_code", "material code", "code", "item_code", "part_number", "sku"],
-    "system_source": ["系统来源", "来源系统", "来源", "system", "system_source", "source_system", "system name"],
-    "material_name": ["物料名称", "物料名", "名称", "material_name", "material name", "name", "item_name", "title"],
-    "description": ["物料描述", "描述", "说明", "description", "desc", "material_description", "item_desc", "spec"],
-    "category": ["物料分类", "分类", "品类", "category", "class", "material_category", "item_category"],
-    "unit": ["计量单位", "单位", "unit", "uom", "unit_of_measure", "measure_unit"],
-    "create_time": ["创建时间", "创建日期", "时间", "日期", "created_at", "create_time", "created", "date", "timestamp"],
+    "material_code": ["物料编码", "物料代码", "物料号", "零件号", "备件编码", "编码", "material_code", "material code", "item_code", "item code", "part_number", "part number", "sku", "code"],
+    "system_source": ["系统来源", "来源系统", "数据来源", "数据源", "源系统", "来源", "system_source", "source_system", "source system", "system name", "system"],
+    "material_name": ["物料名称", "物料名", "备件名称", "零件名称", "品名", "名称", "material_name", "material name", "item_name", "item name", "part_name", "part name", "title", "name"],
+    "description": ["物料描述", "物料说明", "规格描述", "规格参数", "技术描述", "描述", "说明", "material_description", "material description", "item_desc", "item description", "specification", "description", "desc", "spec"],
+    "category": ["物料分类", "物料类别", "物资分类", "物资类别", "备件分类", "备件类别", "大类", "分类", "类别", "品类", "material_category", "material category", "item_category", "item category", "category", "class"],
+    "unit": ["计量单位", "基本单位", "物料单位", "单位", "unit_of_measure", "measure_unit", "unit of measure", "uom", "unit"],
+    "create_time": ["创建时间", "创建日期", "录入时间", "导入时间", "时间", "日期", "created_at", "create_time", "create time", "created", "timestamp", "date"],
     "plant_code": ["工厂编码", "工厂代码", "工厂", "所属工厂", "plant_code", "plant", "site_code", "factory_code"],
 }
 
@@ -91,7 +147,7 @@ def _clean_value(value) -> str:
 
 
 def _normalize_header(value) -> str:
-    return re.sub(r"\s+", " ", _clean_value(value).lower())
+    return re.sub(r"[\s_\-./\\()（）\[\]【】:：]+", "", _clean_value(value).lower())
 
 
 def _normalize_plant_code(value, default: str = "GROUP") -> str:
@@ -106,14 +162,31 @@ def _normalize_plant_code(value, default: str = "GROUP") -> str:
 
 
 def map_fields(headers: list[str]) -> dict[str, str]:
-    normalized = {_normalize_header(header): header for header in headers}
+    normalized_headers = [(_normalize_header(header), header, index) for index, header in enumerate(headers)]
     mapping: dict[str, str] = {}
+    used: set[str] = set()
     for field, aliases in FIELD_ALIASES.items():
-        for alias in aliases:
-            match = normalized.get(_normalize_header(alias))
-            if match is not None:
-                mapping[field] = match
-                break
+        candidates = []
+        for alias_index, alias in enumerate(aliases):
+            normalized_alias = _normalize_header(alias)
+            if not normalized_alias:
+                continue
+            for normalized_header, header, header_index in normalized_headers:
+                if header in used:
+                    continue
+                if normalized_header == normalized_alias:
+                    score = 1000 + len(normalized_alias)
+                elif len(normalized_alias) >= (2 if re.search(r"[\u4e00-\u9fff]", normalized_alias) else 4) and (
+                    normalized_header.startswith(normalized_alias) or normalized_header.endswith(normalized_alias)
+                ):
+                    score = 500 + len(normalized_alias)
+                else:
+                    continue
+                candidates.append((-score, alias_index, header_index, header))
+        if candidates:
+            match = min(candidates)[3]
+            mapping[field] = match
+            used.add(match)
     return mapping
 
 
@@ -129,7 +202,16 @@ def normalize_records(
 
     headers = list(raw_records[0].keys()) if isinstance(raw_records[0], dict) else []
     mapping = explicit_mapping or map_fields(headers)
+    valid_headers = set(headers)
+    clean_mapping, used_sources = {}, set()
+    for field in FIELD_ALIASES:
+        source = mapping.get(field)
+        if source in valid_headers and source not in used_sources:
+            clean_mapping[field] = source
+            used_sources.add(source)
+    mapping = clean_mapping
     standard_input = all(any(key == field for key in headers) for field in ("material_code", "material_name", "description"))
+    imported_at = _utc_now()
     records = []
     for raw in raw_records:
         if not isinstance(raw, dict):
@@ -138,6 +220,16 @@ def normalize_records(
         for field in FIELD_ALIASES:
             source = field if standard_input and field in raw else mapping.get(field)
             record[field] = _clean_value(raw.get(source, "")) if source else ""
+        supplied_extra = raw.get("_extra") if isinstance(raw.get("_extra"), dict) else {}
+        extra = {str(key): _clean_value(value) for key, value in supplied_extra.items() if _clean_value(value)}
+        for key, value in raw.items():
+            if key not in used_sources and key not in FIELD_ALIASES and not str(key).startswith("_"):
+                cleaned = _clean_value(value)
+                if cleaned:
+                    extra[str(key)] = cleaned
+        record["_extra"] = extra
+        record["system_source"] = record["system_source"] or "CSV导入"
+        record["create_time"] = record["create_time"] or imported_at
         record["plant_code"] = _normalize_plant_code(record.get("plant_code"), default_plant_code)
         if not (record["material_code"] or record["material_name"] or record["description"]):
             continue
@@ -388,6 +480,67 @@ def init_db() -> None:
                 instruction TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS vector_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'golden_master',
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                batch_id TEXT,
+                plant_code TEXT NOT NULL DEFAULT 'GROUP',
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                vector BLOB NOT NULL,
+                dimension INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                metadata TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(namespace, batch_id, entity_type, entity_id, provider, model),
+                FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS workflow_steps (
+                batch_id TEXT NOT NULL,
+                step_code TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                metrics TEXT,
+                action_endpoint TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (batch_id, step_code),
+                FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS plant_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                plant_code TEXT NOT NULL,
+                mdm_code TEXT NOT NULL,
+                accepted INTEGER NOT NULL DEFAULT 1,
+                rating INTEGER NOT NULL DEFAULT 5,
+                comment TEXT,
+                actor TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS audit_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                height INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                actor TEXT,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                merkle_root TEXT NOT NULL,
+                block_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(batch_id, height),
+                FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -435,6 +588,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_mappings_plant ON mappings(batch_id, plant_code);
             CREATE INDEX IF NOT EXISTS idx_lifecycle_plant ON lifecycle(batch_id, plant_code);
             CREATE INDEX IF NOT EXISTS idx_distribution_plant ON distribution_logs(batch_id, plant_code);
+            CREATE INDEX IF NOT EXISTS idx_vectors_batch ON vector_embeddings(batch_id, namespace, provider, model);
+            CREATE INDEX IF NOT EXISTS idx_vectors_entity ON vector_embeddings(entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_feedback_batch ON plant_feedback(batch_id, plant_code);
+            CREATE INDEX IF NOT EXISTS idx_audit_batch_height ON audit_blocks(batch_id, height);
             """
         )
         _migrate_legacy_batches(conn)
@@ -443,6 +600,38 @@ def init_db() -> None:
             conn.execute(f"UPDATE {table} SET plant_code = 'GROUP' WHERE plant_code IS NULL OR plant_code = ''")
         for table in ("masters", "batch_masters", "reviews"):
             conn.execute(f"UPDATE {table} SET plant_codes = 'GROUP' WHERE plant_codes IS NULL OR plant_codes = ''")
+
+        # Product upgrades must make historical batches usable without forcing a CSV re-upload.
+        for batch in conn.execute("SELECT batch_id, record_count, filename FROM batches ORDER BY id").fetchall():
+            batch_id = batch["batch_id"]
+            if not conn.execute("SELECT 1 FROM workflow_steps WHERE batch_id = ? LIMIT 1", (batch_id,)).fetchone():
+                _initialize_workflow(conn, batch_id)
+                master_count = conn.execute("SELECT COUNT(*) FROM batch_masters WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+                pending_reviews = conn.execute(
+                    "SELECT COUNT(*) FROM reviews WHERE batch_id = ? AND status = 'REVIEW'", (batch_id,)
+                ).fetchone()[0]
+                distribution_count = conn.execute(
+                    "SELECT COUNT(*) FROM distribution_logs WHERE batch_id = ? AND status = 'SUCCESS'", (batch_id,)
+                ).fetchone()[0]
+                feedback_count = conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+                for code in ("INGEST", "STANDARDIZE", "GRAPH_DEDUPE", "QUALITY"):
+                    _set_workflow_step(conn, batch_id, code, "COMPLETED", 100, {"migrated": True})
+                _set_workflow_step(conn, batch_id, "REVIEW", "ACTION_REQUIRED" if pending_reviews else "COMPLETED",
+                                   0 if pending_reviews else 100, {"pending": pending_reviews, "migrated": True})
+                _set_workflow_step(conn, batch_id, "DISTRIBUTE", "COMPLETED" if distribution_count else "READY",
+                                   100 if distribution_count else 0, {"success_count": distribution_count, "migrated": True})
+                _set_workflow_step(conn, batch_id, "FEEDBACK", "COMPLETED" if feedback_count else ("ACTION_REQUIRED" if distribution_count else "WAITING"),
+                                   100 if feedback_count else 0, {"feedback_count": feedback_count, "migrated": True})
+                logger.info("backfilled workflow for historical batch %s", batch_id)
+            if not conn.execute("SELECT 1 FROM vector_embeddings WHERE batch_id = ? LIMIT 1", (batch_id,)).fetchone():
+                vector_meta = _index_batch_vectors(conn, batch_id, "local")
+                _set_workflow_step(conn, batch_id, "VECTOR_INDEX", "COMPLETED", 100, {**vector_meta, "migrated": True})
+                logger.info("backfilled vector index for historical batch %s", batch_id)
+            if not conn.execute("SELECT 1 FROM audit_blocks WHERE batch_id = ? LIMIT 1", (batch_id,)).fetchone():
+                _append_audit_block(conn, batch_id, "LEGACY_BATCH_MIGRATED", "BATCH", batch_id, {
+                    "filename": batch["filename"], "record_count": batch["record_count"],
+                    "message": "历史批次已升级到M-AI Master 4.0产品化运行模型",
+                }, actor="升级迁移器")
 
 
 class AIGovernanceEngine:
@@ -608,17 +797,28 @@ class AIGovernanceEngine:
         return ""
 
     def enrich(self, record: dict) -> dict:
-        text = f"{record.get('material_name', '')} {record.get('description', '')}"
+        extra = record.get("_extra") if isinstance(record.get("_extra"), dict) else {}
+        semantic_extra = " ".join(
+            _clean_value(value) for key, value in extra.items()
+            if any(token in _normalize_header(key) for token in ("子类", "型号", "规格", "brand", "model", "material", "材质"))
+        )
+        text = f"{record.get('material_name', '')} {record.get('description', '')} {semantic_extra}"
         enriched = dict(record)
         enriched["_ext"] = {
             "model": self.extract_model(text), "brand": self.extract_brand(text), "dn": self.extract_dn(text),
             "pressure": self.extract_pressure(text), "material": self.extract_material(text),
+            "raw_fields": extra,
         }
         enriched["_category"] = self.detect_category(record.get("material_name", ""), record.get("category", ""))
         return enriched
 
     def semantic_tokens(self, record: dict) -> list[str]:
-        text = f"{record.get('material_name', '')} {record.get('description', '')}"
+        extra = record.get("_extra") if isinstance(record.get("_extra"), dict) else {}
+        semantic_extra = " ".join(
+            _clean_value(value) for key, value in extra.items()
+            if any(token in _normalize_header(key) for token in ("子类", "型号", "规格", "brand", "model", "material", "材质"))
+        )
+        text = f"{record.get('material_name', '')} {record.get('description', '')} {semantic_extra}"
         standard = self.standardize_text(text)
         ext = record["_ext"]
         tokens = []
@@ -869,12 +1069,14 @@ class SemanticEngine:
         self.api_keys = {
             key: os.getenv(config["env_key"], "").strip() for key, config in self.MODELS.items()
         }
-        self._cache: dict[tuple[str, str], list[float]] = {}
+        self._cache: dict[tuple[str, str, str], list[float]] = {}
 
     def configured_models(self) -> list[str]:
         return [key for key in self.MODELS if self.api_keys.get(key)]
 
-    def _request_embeddings(self, texts: list[str], model_key: str = "qwen") -> list[list[float]] | None:
+    def _request_embeddings(
+        self, texts: list[str], model_key: str = "qwen", text_type: str = "document"
+    ) -> list[list[float]] | None:
         config = self.MODELS.get(model_key)
         api_key = self.api_keys.get(model_key, "")
         if not config or not api_key or not texts:
@@ -884,7 +1086,7 @@ class SemanticEngine:
         if model_key == "qwen":
             payload = {
                 "model": config["model"], "input": {"texts": values},
-                "parameters": {"dimension": config["dimension"], "text_type": "document"},
+                "parameters": {"dimension": config["dimension"], "text_type": text_type},
             }
         else:
             payload = {"model": config["model"], "input": values}
@@ -910,26 +1112,26 @@ class SemanticEngine:
             logger.warning("%s embedding unavailable: %s", config["name"], exc)
             return None
 
-    def get_embedding(self, text: str, model_key: str = "qwen") -> list[float] | None:
-        vectors = self.get_embeddings([text], model_key=model_key)
+    def get_embedding(self, text: str, model_key: str = "qwen", text_type: str = "document") -> list[float] | None:
+        vectors = self.get_embeddings([text], model_key=model_key, text_type=text_type)
         return vectors[0] if vectors else None
 
     def get_embeddings(
-        self, texts: list[str], batch_size: int = 10, model_key: str = "qwen"
+        self, texts: list[str], batch_size: int = 10, model_key: str = "qwen", text_type: str = "document"
     ) -> list[list[float]] | None:
         if model_key not in self.MODELS:
             return None
         values = [_clean_value(text) for text in texts]
         if not values or any(not value for value in values):
             return None
-        missing = list(dict.fromkeys(value for value in values if (model_key, value) not in self._cache))
+        missing = list(dict.fromkeys(value for value in values if (model_key, text_type, value) not in self._cache))
         for offset in range(0, len(missing), batch_size):
             chunk = missing[offset:offset + batch_size]
-            vectors = self._request_embeddings(chunk, model_key=model_key)
+            vectors = self._request_embeddings(chunk, model_key=model_key, text_type=text_type)
             if not vectors:
                 return None
-            self._cache.update(((model_key, text), vector) for text, vector in zip(chunk, vectors))
-        return [self._cache[(model_key, value)] for value in values]
+            self._cache.update(((model_key, text_type, text), vector) for text, vector in zip(chunk, vectors))
+        return [self._cache[(model_key, text_type, value)] for value in values]
 
     def resolve_embeddings(self, texts: list[str], preferred_model: str = "qwen") -> tuple[list[list[float]] | None, dict]:
         preferred = preferred_model if preferred_model in self.MODELS else "qwen"
@@ -953,6 +1155,48 @@ class SemanticEngine:
             "method": "规则增强 Jaccard 字符相似度（降级）", "model": requested["model"],
             "provider": preferred, "dimension": None, "embedding_active": False,
             "warning": f"{requested['name']} {reason}，已使用确定性本地语义相似度。",
+        }
+
+    @staticmethod
+    def local_embedding(text: str, dimension: int = 384) -> list[float]:
+        """Deterministic feature-hash embedding used for an always-available vector index."""
+        normalized = engine.standardize_text(_clean_value(text))
+        chars = list(normalized)
+        tokens = chars + [normalized[index:index + 2] for index in range(max(0, len(normalized) - 1))]
+        tokens += re.findall(r"[a-z0-9]+(?:[-./][a-z0-9]+)*", normalized)
+        vector = np.zeros(dimension, dtype=np.float32)
+        for token in tokens or ["<empty>"]:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % dimension
+            vector[index] += 1.0 if digest[4] & 1 else -1.0
+        norm = float(np.linalg.norm(vector))
+        if norm:
+            vector /= norm
+        return vector.tolist()
+
+    def resolve_vectorization(
+        self, texts: list[str], preferred_model: str = "qwen", text_type: str = "document"
+    ) -> tuple[list[list[float]], dict]:
+        """Resolve embeddings for persistence; unlike pairwise demo similarity, this always returns vectors."""
+        if preferred_model == "local":
+            return [self.local_embedding(text) for text in texts], {
+                "provider": "local", "model": "feature-hash-v1", "dimension": 384,
+                "method": "离线特征哈希向量", "warning": None, "remote": False,
+            }
+        if preferred_model in self.MODELS and self.api_keys.get(preferred_model):
+            vectors = self.get_embeddings(texts, model_key=preferred_model, text_type=text_type)
+            if vectors is not None:
+                config = self.MODELS[preferred_model]
+                return vectors, {
+                    "provider": preferred_model, "model": config["model"], "dimension": config["dimension"],
+                    "method": f"{config['name']} {config['model']}", "warning": None, "remote": True,
+                }
+        vectors = [self.local_embedding(text) for text in texts]
+        requested = self.MODELS.get(preferred_model, self.MODELS["qwen"])
+        return vectors, {
+            "provider": "local", "model": "feature-hash-v1", "dimension": 384,
+            "method": "离线特征哈希向量", "warning": f"{requested['name']}不可用，向量库已自动使用本地确定性向量。",
+            "remote": False,
         }
 
     @staticmethod
@@ -1168,6 +1412,330 @@ semantic_engine = SemanticEngine()
 semantic_governor = SemanticDemoGovernor(semantic_engine, engine)
 
 
+WORKFLOW_DEFINITION = [
+    ("INGEST", 1, "多源数据接入", "/api/upload"),
+    ("STANDARDIZE", 2, "大模型标准识别", "/api/classify"),
+    ("VECTOR_INDEX", 3, "Embedding向量入库", "/api/vectors/rebuild"),
+    ("GRAPH_DEDUPE", 4, "图谱辅助查重", "/api/graph"),
+    ("REVIEW", 5, "多主体人工审核", "/api/reviews"),
+    ("QUALITY", 6, "质量评估与生命周期", "/api/lifecycle"),
+    ("DISTRIBUTE", 7, "跨工厂智能分发", "/api/distribute"),
+    ("FEEDBACK", 8, "工厂反馈与知识回流", "/api/feedback"),
+]
+
+
+def _set_workflow_step(
+    conn: sqlite3.Connection, batch_id: str, step_code: str, status: str,
+    progress: int, metrics: dict | None = None,
+) -> None:
+    definition = next((item for item in WORKFLOW_DEFINITION if item[0] == step_code), None)
+    if not definition:
+        raise ValueError(f"unknown workflow step: {step_code}")
+    code, ordinal, name, endpoint = definition
+    conn.execute(
+        """INSERT INTO workflow_steps
+           (batch_id, step_code, ordinal, name, status, progress, metrics, action_endpoint, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(batch_id, step_code) DO UPDATE SET status=excluded.status,
+            progress=excluded.progress, metrics=excluded.metrics, updated_at=excluded.updated_at""",
+        (batch_id, code, ordinal, name, status, max(0, min(100, int(progress))),
+         json.dumps(metrics or {}, ensure_ascii=False), endpoint, _utc_now()),
+    )
+
+
+def _initialize_workflow(conn: sqlite3.Connection, batch_id: str) -> None:
+    for code, _ordinal, _name, _endpoint in WORKFLOW_DEFINITION:
+        _set_workflow_step(conn, batch_id, code, "WAITING", 0)
+
+
+def _workflow_payload(conn: sqlite3.Connection, batch_id: str) -> dict:
+    rows = _rows(conn, "SELECT * FROM workflow_steps WHERE batch_id = ? ORDER BY ordinal", (batch_id,))
+    for row in rows:
+        row["metrics"] = json.loads(row.get("metrics") or "{}")
+    completed = sum(row["status"] == "COMPLETED" for row in rows)
+    return {
+        "batch_id": batch_id,
+        "steps": rows,
+        "completed_steps": completed,
+        "total_steps": len(WORKFLOW_DEFINITION),
+        "progress": round(completed / len(WORKFLOW_DEFINITION) * 100, 1),
+        "closed_loop": bool(rows) and completed == len(WORKFLOW_DEFINITION),
+    }
+
+
+def _canonical_json(value: dict) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _append_audit_block(
+    conn: sqlite3.Connection, batch_id: str, event_type: str, entity_type: str,
+    entity_id: str, payload: dict, actor: str = "M-AI Agent",
+) -> dict:
+    previous = conn.execute(
+        "SELECT height, block_hash FROM audit_blocks WHERE batch_id = ? ORDER BY height DESC LIMIT 1", (batch_id,)
+    ).fetchone()
+    height = int(previous["height"]) + 1 if previous else 1
+    previous_hash = previous["block_hash"] if previous else "0" * 64
+    payload_json = _canonical_json(payload)
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    merkle_root = payload_hash
+    created_at = _utc_now()
+    header = {
+        "batch_id": batch_id, "height": height, "event_type": event_type,
+        "entity_type": entity_type, "entity_id": entity_id, "actor": actor,
+        "payload_hash": payload_hash, "previous_hash": previous_hash,
+        "merkle_root": merkle_root, "created_at": created_at,
+    }
+    block_hash = hashlib.sha256(_canonical_json(header).encode("utf-8")).hexdigest()
+    conn.execute(
+        """INSERT INTO audit_blocks
+           (batch_id, height, event_type, entity_type, entity_id, actor, payload_json,
+            payload_hash, previous_hash, merkle_root, block_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (batch_id, height, event_type, entity_type, entity_id, actor, payload_json,
+         payload_hash, previous_hash, merkle_root, block_hash, created_at),
+    )
+    return {**header, "block_hash": block_hash}
+
+
+def _verify_audit_chain(conn: sqlite3.Connection, batch_id: str) -> dict:
+    blocks = _rows(conn, "SELECT * FROM audit_blocks WHERE batch_id = ? ORDER BY height", (batch_id,))
+    expected_previous = "0" * 64
+    errors = []
+    for expected_height, block in enumerate(blocks, 1):
+        payload_hash = hashlib.sha256((block["payload_json"] or "").encode("utf-8")).hexdigest()
+        header = {
+            "batch_id": block["batch_id"], "height": block["height"], "event_type": block["event_type"],
+            "entity_type": block["entity_type"], "entity_id": block["entity_id"], "actor": block["actor"],
+            "payload_hash": block["payload_hash"], "previous_hash": block["previous_hash"],
+            "merkle_root": block["merkle_root"], "created_at": block["created_at"],
+        }
+        calculated_hash = hashlib.sha256(_canonical_json(header).encode("utf-8")).hexdigest()
+        if int(block["height"]) != expected_height:
+            errors.append({"height": block["height"], "error": "区块高度不连续"})
+        if block["previous_hash"] != expected_previous:
+            errors.append({"height": block["height"], "error": "前序哈希不匹配"})
+        if payload_hash != block["payload_hash"] or block["merkle_root"] != block["payload_hash"]:
+            errors.append({"height": block["height"], "error": "业务载荷哈希不匹配"})
+        if calculated_hash != block["block_hash"]:
+            errors.append({"height": block["height"], "error": "区块哈希不匹配"})
+        expected_previous = block["block_hash"]
+    return {
+        "batch_id": batch_id, "valid": not errors, "block_count": len(blocks),
+        "latest_hash": expected_previous if blocks else None, "errors": errors,
+        "chain_type": "本地联盟链式审计账本", "public_chain": False,
+    }
+
+
+def _master_vector_content(master: dict | sqlite3.Row) -> str:
+    return " ".join(_clean_value(master[key]) for key in (
+        "standard_name", "category", "brand", "model", "dn", "pressure", "material", "source_systems"
+    ) if key in master.keys() and _clean_value(master[key]))
+
+
+def _index_batch_vectors(
+    conn: sqlite3.Connection, batch_id: str, preferred_model: str = "local", namespace: str = "golden_master"
+) -> dict:
+    rows = conn.execute("SELECT * FROM batch_masters WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()
+    if not rows:
+        return {"batch_id": batch_id, "indexed": 0, "namespace": namespace, "provider": "local",
+                "model": "feature-hash-v1", "dimension": 384, "warning": "当前批次没有黄金主数据。"}
+    feedback_rows = {
+        row["mdm_code"]: dict(row) for row in conn.execute(
+            """SELECT mdm_code, AVG(rating) AS feedback_rating, AVG(accepted) AS acceptance_rate,
+                      GROUP_CONCAT(comment, ' ') AS feedback_text, COUNT(*) AS feedback_count
+               FROM plant_feedback WHERE batch_id = ? GROUP BY mdm_code""", (batch_id,)
+        ).fetchall()
+    }
+    contents = []
+    for row in rows:
+        feedback_item = feedback_rows.get(row["mdm_code"], {})
+        feedback_text = _clean_value(feedback_item.get("feedback_text"))
+        content = _master_vector_content(row)
+        contents.append(f"{content} 工厂反馈 {feedback_text}".strip() if feedback_text else content)
+    vectors, metadata = semantic_engine.resolve_vectorization(contents, preferred_model, "document")
+    now = _utc_now()
+    for row, content, vector in zip(rows, contents, vectors):
+        vector_array = np.asarray(vector, dtype=np.float32)
+        item_metadata = {
+            "standard_name": row["standard_name"], "category": row["category"],
+            "brand": row["brand"], "model": row["model"], "dn": row["dn"],
+            "pressure": row["pressure"], "material": row["material"],
+            "decision": row["decision"], "plant_codes": row["plant_codes"],
+            "feedback_count": int(feedback_rows.get(row["mdm_code"], {}).get("feedback_count") or 0),
+            "feedback_rating": round(float(feedback_rows.get(row["mdm_code"], {}).get("feedback_rating") or 0), 2),
+            "acceptance_rate": round(float(feedback_rows.get(row["mdm_code"], {}).get("acceptance_rate") or 0), 4),
+        }
+        conn.execute(
+            """INSERT INTO vector_embeddings
+               (namespace, entity_type, entity_id, batch_id, plant_code, content, content_hash,
+                vector, dimension, provider, model, metadata, created_at, updated_at)
+               VALUES (?, 'MASTER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(namespace, batch_id, entity_type, entity_id, provider, model) DO UPDATE SET
+                plant_code=excluded.plant_code, content=excluded.content, content_hash=excluded.content_hash,
+                vector=excluded.vector, dimension=excluded.dimension, metadata=excluded.metadata,
+                updated_at=excluded.updated_at""",
+            (namespace, row["mdm_code"], batch_id, row["plant_codes"] or "GROUP", content,
+             hashlib.sha256(content.encode("utf-8")).hexdigest(), vector_array.tobytes(), len(vector_array),
+             metadata["provider"], metadata["model"], json.dumps(item_metadata, ensure_ascii=False), now, now),
+        )
+    return {"batch_id": batch_id, "namespace": namespace, "indexed": len(rows), **metadata}
+
+
+def _search_vectors(
+    conn: sqlite3.Connection, query: str, batch_id: str, preferred_model: str,
+    top_k: int, plant_code: str = "GROUP", namespace: str = "golden_master",
+) -> dict:
+    requested = preferred_model if preferred_model in {*SemanticEngine.MODELS, "local"} else "local"
+    provider = requested
+    model_name = SemanticEngine.MODELS[requested]["model"] if requested in SemanticEngine.MODELS else "feature-hash-v1"
+    count = conn.execute(
+        """SELECT COUNT(*) FROM vector_embeddings
+           WHERE batch_id = ? AND namespace = ? AND provider = ? AND model = ?""",
+        (batch_id, namespace, provider, model_name),
+    ).fetchone()[0]
+    index_meta = None
+    if not count:
+        index_meta = _index_batch_vectors(conn, batch_id, requested, namespace)
+        provider, model_name = index_meta["provider"], index_meta["model"]
+    if provider == "local":
+        query_vector = np.asarray(semantic_engine.local_embedding(query), dtype=np.float32)
+    else:
+        vectors = semantic_engine.get_embeddings([query], model_key=provider, text_type="query")
+        if vectors is None:
+            index_meta = _index_batch_vectors(conn, batch_id, "local", namespace)
+            provider, model_name = "local", "feature-hash-v1"
+            query_vector = np.asarray(semantic_engine.local_embedding(query), dtype=np.float32)
+        else:
+            query_vector = np.asarray(vectors[0], dtype=np.float32)
+    rows = conn.execute(
+        """SELECT * FROM vector_embeddings
+           WHERE batch_id = ? AND namespace = ? AND provider = ? AND model = ?""",
+        (batch_id, namespace, provider, model_name),
+    ).fetchall()
+    results = []
+    for row in rows:
+        if plant_code != "GROUP" and not _plant_visible(row["plant_code"], plant_code):
+            continue
+        vector = np.frombuffer(row["vector"], dtype=np.float32)
+        score = SemanticEngine.cosine_similarity(query_vector.tolist(), vector.tolist())
+        metadata = json.loads(row["metadata"] or "{}")
+        results.append({
+            "entity_type": row["entity_type"], "entity_id": row["entity_id"], "content": row["content"],
+            "score": round(score, 6), "metadata": metadata,
+        })
+    results.sort(key=lambda item: item["score"], reverse=True)
+    warning = (index_meta or {}).get("warning")
+    return {
+        "query": query, "batch_id": batch_id, "namespace": namespace, "provider": provider,
+        "model": model_name, "dimension": len(query_vector), "warning": warning,
+        "results": results[:top_k], "total": len(results), "top_k": top_k,
+    }
+
+
+class QwenGovernanceAgent:
+    API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    def __init__(self):
+        self.api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+        self.model = os.getenv("QWEN_CHAT_MODEL", "qwen-plus").strip() or "qwen-plus"
+
+    @staticmethod
+    def fallback_plan(task: str, context: dict) -> dict:
+        return {
+            "objective": task,
+            "summary": "采用规则、向量检索、知识图谱和人工审核协同完成治理，并以工厂反馈回流闭环。",
+            "steps": [
+                {"step": ordinal, "code": code, "name": name, "action": endpoint}
+                for code, ordinal, name, endpoint in WORKFLOW_DEFINITION
+            ],
+            "risk_controls": ["关键属性冲突强制人工复核", "按工厂主体控制数据可见与分发范围", "全流程哈希链存证"],
+            "context": context,
+        }
+
+    def plan(self, task: str, context: dict) -> tuple[dict, dict]:
+        fallback = self.fallback_plan(task, context)
+        if not self.api_key:
+            return fallback, {"active": False, "model": self.model, "method": "确定性Agent编排（降级）",
+                              "warning": "DASHSCOPE_API_KEY未配置，已使用本地可解释编排。"}
+        system_prompt = (
+            "你是大型制造集团主数据治理Agent。只返回JSON对象，字段必须包含objective、summary、steps、"
+            "risk_controls。steps需要覆盖接入、标准识别、向量入库、图谱查重、审核、质量、分发、反馈回流，"
+            "不得绕过人工审核和工厂数据边界。"
+        )
+        try:
+            response = requests.post(
+                self.API_URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={"model": self.model, "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": _canonical_json({"task": task, "context": context})},
+                ], "temperature": 0.1}, timeout=(3.05, 20),
+            )
+            if response.status_code != 200:
+                raise requests.RequestException(f"HTTP {response.status_code}")
+            content = response.json()["choices"][0]["message"]["content"].strip()
+            match = re.search(r"\{.*\}", content, re.S)
+            plan = json.loads(match.group(0) if match else content)
+            if not isinstance(plan.get("steps"), list) or not plan["steps"]:
+                raise ValueError("LLM response does not contain steps")
+            return plan, {"active": True, "model": self.model, "method": "通义千问大模型Agent", "warning": None}
+        except (requests.RequestException, requests.Timeout, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("Qwen agent unavailable: %s", exc)
+            return fallback, {"active": False, "model": self.model, "method": "确定性Agent编排（降级）",
+                              "warning": f"通义千问调用失败，已自动降级：{exc}"}
+
+
+qwen_agent = QwenGovernanceAgent()
+
+
+def _build_governance_graph(
+    conn: sqlite3.Connection, batch_id: str, plant_code: str = "GROUP", raw_limit: int = 80
+) -> tuple[nx.Graph, dict]:
+    graph = nx.Graph(batch_id=batch_id)
+    masters = conn.execute("SELECT * FROM batch_masters WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()
+    visible_codes = set()
+    for master in masters:
+        if plant_code != "GROUP" and not _plant_visible(master["plant_codes"], plant_code):
+            continue
+        master_id = f"master:{master['mdm_code']}"
+        visible_codes.add(master["mdm_code"])
+        graph.add_node(master_id, label=master["standard_name"] or master["mdm_code"], node_type="MASTER",
+                       entity_id=master["mdm_code"], decision=master["decision"])
+        if master["category"]:
+            category_id = f"category:{master['category']}"
+            graph.add_node(category_id, label=master["category"], node_type="CATEGORY", entity_id=master["category"])
+            graph.add_edge(master_id, category_id, relation="CLASSIFIED_AS")
+        for source in filter(None, _clean_value(master["source_systems"]).split(",")):
+            source_id = f"system:{source}"
+            graph.add_node(source_id, label=source, node_type="SYSTEM", entity_id=source)
+            graph.add_edge(master_id, source_id, relation="SOURCED_FROM")
+        for plant in filter(None, _clean_value(master["plant_codes"]).split(",")):
+            plant = _normalize_plant_code(plant)
+            plant_id = f"plant:{plant}"
+            graph.add_node(plant_id, label=PLANTS.get(plant, plant), node_type="PLANT", entity_id=plant)
+            graph.add_edge(master_id, plant_id, relation="AVAILABLE_TO")
+    mappings = conn.execute(
+        "SELECT * FROM mappings WHERE batch_id = ? ORDER BY id LIMIT ?", (batch_id, max(0, raw_limit))
+    ).fetchall()
+    for mapping in mappings:
+        if mapping["mdm_code"] not in visible_codes:
+            continue
+        raw_id = f"raw:{mapping['id']}"
+        graph.add_node(raw_id, label=mapping["original_name"] or mapping["original_code"] or raw_id,
+                       node_type="RAW", entity_id=mapping["original_code"])
+        graph.add_edge(raw_id, f"master:{mapping['mdm_code']}", relation="MAPPED_TO",
+                       similarity=round(float(mapping["similarity"] or 0), 4))
+    stats = {
+        "nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(),
+        "connected_components": nx.number_connected_components(graph) if graph.number_of_nodes() else 0,
+        "types": {},
+    }
+    for _node, data in graph.nodes(data=True):
+        stats["types"][data["node_type"]] = stats["types"].get(data["node_type"], 0) + 1
+    return graph, stats
+
+
 def analyze_quality(records: list[dict], anomaly_count: int = 0) -> dict:
     if not records:
         return {"overall": {"score": 0, "recordCount": 0}, "systems": {}, "issues": [], "suggestions": []}
@@ -1280,6 +1848,35 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
             "INSERT INTO quality_reports (batch_id, report, generated_at) VALUES (?, ?, ?)",
             (batch_id, json.dumps(quality_report, ensure_ascii=False), created_at),
         )
+        _initialize_workflow(conn, batch_id)
+        _set_workflow_step(conn, batch_id, "INGEST", "COMPLETED", 100, {
+            "records": len(records), "systems": len({item.get("system_source") for item in records if item.get("system_source")}),
+            "plants": plant_codes,
+        })
+        _set_workflow_step(conn, batch_id, "STANDARDIZE", "COMPLETED", 100, {
+            "method": semantic_meta["method"], "model": semantic_meta["model"],
+            "embedding_active": semantic_meta.get("embedding_active", False),
+        })
+        vector_meta = _index_batch_vectors(conn, batch_id, "local")
+        _set_workflow_step(conn, batch_id, "VECTOR_INDEX", "COMPLETED", 100, vector_meta)
+        graph, graph_meta = _build_governance_graph(conn, batch_id)
+        _set_workflow_step(conn, batch_id, "GRAPH_DEDUPE", "COMPLETED", 100, {
+            **graph_meta, "golden_masters": len(masters), "source_records": len(mappings),
+        })
+        _set_workflow_step(
+            conn, batch_id, "REVIEW", "ACTION_REQUIRED" if reviews else "COMPLETED",
+            0 if reviews else 100, {"pending": len(reviews)},
+        )
+        _set_workflow_step(conn, batch_id, "QUALITY", "COMPLETED", 100, {
+            "score": quality_report.get("overall", {}).get("score", 0), "anomalies": anomaly_count,
+        })
+        _set_workflow_step(conn, batch_id, "DISTRIBUTE", "READY", 0, {"approved_masters": len(masters) - len(reviews)})
+        _set_workflow_step(conn, batch_id, "FEEDBACK", "WAITING", 0, {"feedback_count": 0})
+        _append_audit_block(conn, batch_id, "BATCH_GOVERNED", "BATCH", batch_id, {
+            "filename": filename, "record_count": len(records), "golden_master_count": len(masters),
+            "review_count": len(reviews), "quality_score": quality_report.get("overall", {}).get("score", 0),
+            "vector_index": vector_meta, "graph": graph_meta,
+        })
     return get_batch_state(batch_id)
 
 
@@ -1315,7 +1912,10 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
             return {"batch": None, "records": [], "masters": [], "mappings": [], "reviews": [], "quality_report": None,
                     "summary": {"record_count": 0, "master_count": 0, "review_count": 0,
                                 "auto_merge_count": 0, "new_count": 0, "compression_rate": 0.0},
-                    "lifecycle": [], "distribution_logs": [], "search_history": []}
+                    "lifecycle": [], "distribution_logs": [], "search_history": [], "feedback": [],
+                    "workflow": {"batch_id": None, "steps": [], "completed_steps": 0,
+                                 "total_steps": len(WORKFLOW_DEFINITION), "progress": 0, "closed_loop": False},
+                    "vector_index": {"count": 0}, "audit_chain": {"valid": True, "block_count": 0}}
         batch_row = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
         if not batch_row:
             raise LookupError("batch not found")
@@ -1379,6 +1979,18 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
             "warning": batch.get("semantic_warning"),
             "embedding_active": bool(batch.get("semantic_dimension")),
         }
+        vector_group = conn.execute(
+            """SELECT provider, model, dimension, COUNT(*) AS count, MAX(updated_at) AS updated_at
+               FROM vector_embeddings WHERE batch_id = ? GROUP BY provider, model, dimension
+               ORDER BY count DESC""", (batch_id,),
+        ).fetchall()
+        vector_index = {
+            "count": sum(int(row["count"]) for row in vector_group),
+            "indexes": [dict(row) for row in vector_group],
+        }
+        feedback = _rows(conn, "SELECT * FROM plant_feedback WHERE batch_id = ? ORDER BY id DESC", (batch_id,))
+        if requested_plant and requested_plant != "GROUP":
+            feedback = [item for item in feedback if item.get("plant_code") == requested_plant]
         return {
             "batch": batch, "records": records, "masters": masters, "mappings": mappings,
             "reviews": reviews, "quality_report": quality, "summary": summary,
@@ -1386,6 +1998,10 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
             "lifecycle": lifecycle,
             "distribution_logs": distribution_logs,
             "search_history": _rows(conn, "SELECT * FROM search_history WHERE batch_id = ? ORDER BY id DESC LIMIT 50", (batch_id,)),
+            "workflow": _workflow_payload(conn, batch_id),
+            "feedback": feedback,
+            "vector_index": vector_index,
+            "audit_chain": _verify_audit_chain(conn, batch_id),
         }
 
 
@@ -1396,15 +2012,33 @@ def index():
 
 @app.get("/api/health")
 def health_check():
-    return jsonify({
-        "status": "ok", "version": "3.2", "storage": "sqlite", "database": DB_PATH.name,
+    database_error = ""
+    try:
+        with db_connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+        database_ready = True
+    except Exception as exc:
+        database_ready = False
+        database_error = type(exc).__name__
+        logger.exception("database readiness check failed")
+    payload = {
+        "status": "ok" if database_ready else "degraded", "ready": database_ready,
+        "version": APP_VERSION, "storage": "sqlite", "database": DB_PATH.name,
+        "deployment": "production" if os.environ.get("MDM_PRODUCTION") == "1" else "development",
+        "authentication": bool(AUTH_PASSWORD), "database_error": database_error,
         "semantic": {
             "primary": "qwen", "model": SemanticEngine.MODELS["qwen"]["model"],
             "dimension": SemanticEngine.MODELS["qwen"]["dimension"],
             "configured_models": semantic_engine.configured_models(),
         },
         "plants": PLANTS,
-    })
+        "capabilities": {
+            "llm_agent": bool(qwen_agent.api_key), "vector_store": True, "knowledge_graph": True,
+            "audit_blockchain": True, "closed_loop_workflow": True,
+        },
+        "trace_id": g.trace_id,
+    }
+    return jsonify(payload), 200 if database_ready else 503
 
 
 @app.get("/api/state/latest")
@@ -1608,21 +2242,167 @@ def api_classify():
 @app.get("/api/agent/capabilities")
 def agent_capabilities():
     return jsonify({
-        "agent": "M-AI Master", "version": "3.2",
+        "agent": "M-AI Master", "version": "4.0",
         "workflow": [
-            {"step": 1, "name": "多源数据接入", "endpoint": "/api/upload"},
-            {"step": 2, "name": "AI语义识别与分类", "endpoint": "/api/classify"},
-            {"step": 3, "name": "相似度查重与黄金数据生成", "endpoint": "/api/govern"},
-            {"step": 4, "name": "多主体人工审核", "endpoint": "/api/reviews"},
-            {"step": 5, "name": "质量评估与生命周期", "endpoint": "/api/lifecycle"},
-            {"step": 6, "name": "自然语言跨系统分发", "endpoint": "/api/distribute"},
+            {"step": ordinal, "code": code, "name": name, "endpoint": endpoint}
+            for code, ordinal, name, endpoint in WORKFLOW_DEFINITION
         ],
         "semantic_models": SemanticEngine.MODELS,
         "configured_models": semantic_engine.configured_models(),
         "fallback": "规则增强 Jaccard 字符相似度（确定性）",
         "plants": PLANTS,
         "collaboration_endpoint": "/api/plants",
+        "productization": {
+            "trace_header": "X-Trace-Id", "persistent_vector_store": "SQLite float32 BLOB",
+            "graph_engine": "NetworkX", "audit_chain": "SHA-256 chained blocks",
+            "feedback_loop": "/api/feedback",
+        },
     })
+
+
+@app.post("/api/agent/plan")
+def agent_plan():
+    payload = request.get_json(silent=True) or {}
+    task = _clean_value(payload.get("task") or payload.get("prompt") or payload.get("text"))
+    if not task:
+        return jsonify({"error": "task is required"}), 400
+    batch_id = _clean_value(payload.get("batch_id"))
+    context = {"plant_code": _normalize_plant_code(payload.get("plant_code")), "trace_id": g.trace_id}
+    if batch_id:
+        try:
+            state = get_batch_state(batch_id)
+            context.update({"batch_id": batch_id, "summary": state["summary"], "workflow": state["workflow"]})
+        except LookupError:
+            return jsonify({"error": "batch not found"}), 404
+    plan, runtime = qwen_agent.plan(task, context)
+    return jsonify({"plan": plan, "runtime": runtime, "trace_id": g.trace_id})
+
+
+@app.get("/api/workflow/latest")
+def latest_workflow():
+    with db_connect() as conn:
+        batch_id = _latest_batch_id(conn)
+        return jsonify(_workflow_payload(conn, batch_id) if batch_id else {
+            "batch_id": None, "steps": [], "completed_steps": 0,
+            "total_steps": len(WORKFLOW_DEFINITION), "progress": 0, "closed_loop": False,
+        })
+
+
+@app.get("/api/workflow/<batch_id>")
+def batch_workflow(batch_id: str):
+    with db_connect() as conn:
+        if not conn.execute("SELECT 1 FROM batches WHERE batch_id = ?", (batch_id,)).fetchone():
+            return jsonify({"error": "batch not found"}), 404
+        return jsonify(_workflow_payload(conn, batch_id))
+
+
+@app.get("/api/vectors/stats")
+def vector_stats():
+    with db_connect() as conn:
+        batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"batch_id": None, "count": 0, "indexes": []})
+        groups = _rows(conn, """SELECT namespace, provider, model, dimension, COUNT(*) AS count,
+                                      MAX(updated_at) AS updated_at
+                               FROM vector_embeddings WHERE batch_id = ?
+                               GROUP BY namespace, provider, model, dimension ORDER BY count DESC""", (batch_id,))
+        return jsonify({"batch_id": batch_id, "count": sum(int(item["count"]) for item in groups), "indexes": groups})
+
+
+@app.post("/api/vectors/rebuild")
+def rebuild_vectors():
+    payload = request.get_json(silent=True) or {}
+    model = _clean_value(payload.get("model")) or "qwen"
+    if model not in {*SemanticEngine.MODELS, "local"}:
+        return jsonify({"error": "unsupported vector model", "supported_models": [*SemanticEngine.MODELS, "local"]}), 400
+    with db_connect() as conn:
+        batch_id = payload.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"error": "no governed batch is available"}), 400
+        result = _index_batch_vectors(conn, batch_id, model, _clean_value(payload.get("namespace")) or "golden_master")
+        _set_workflow_step(conn, batch_id, "VECTOR_INDEX", "COMPLETED", 100, result)
+        _append_audit_block(conn, batch_id, "VECTOR_INDEX_REBUILT", "VECTOR_INDEX", result["model"], result)
+        return jsonify({**result, "trace_id": g.trace_id})
+
+
+@app.post("/api/vectors/search")
+def search_vector_store():
+    payload = request.get_json(silent=True) or {}
+    query = _clean_value(payload.get("query") or payload.get("text"))
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    model = _clean_value(payload.get("model")) or "qwen"
+    try:
+        top_k = max(1, min(50, int(payload.get("top_k", 10))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "top_k must be an integer"}), 400
+    with db_connect() as conn:
+        batch_id = payload.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"error": "no governed batch is available"}), 400
+        result = _search_vectors(conn, query, batch_id, model, top_k,
+                                 _normalize_plant_code(payload.get("plant_code")),
+                                 _clean_value(payload.get("namespace")) or "golden_master")
+        return jsonify({**result, "trace_id": g.trace_id})
+
+
+@app.get("/api/graph")
+def governance_graph():
+    try:
+        raw_limit = max(0, min(300, int(request.args.get("raw_limit", 80))))
+    except ValueError:
+        return jsonify({"error": "raw_limit must be an integer"}), 400
+    with db_connect() as conn:
+        batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"batch_id": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0}})
+        plant_code = _normalize_plant_code(request.args.get("plant_code"))
+        graph, stats = _build_governance_graph(conn, batch_id, plant_code, raw_limit)
+        positions = nx.spring_layout(graph, seed=5497, iterations=35) if graph.number_of_nodes() else {}
+        centrality = nx.degree_centrality(graph) if graph.number_of_nodes() > 1 else {node: 0 for node in graph.nodes}
+        nodes = [{"id": node, **data, "x": round(float(positions[node][0]), 5),
+                  "y": round(float(positions[node][1]), 5), "centrality": round(float(centrality[node]), 5)}
+                 for node, data in graph.nodes(data=True)]
+        edges = [{"source": left, "target": right, **data} for left, right, data in graph.edges(data=True)]
+        return jsonify({"batch_id": batch_id, "plant_code": plant_code, "nodes": nodes, "edges": edges,
+                        "stats": stats, "engine": "NetworkX"})
+
+
+@app.get("/api/graph/lineage/<mdm_code>")
+def graph_lineage(mdm_code: str):
+    with db_connect() as conn:
+        batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"error": "no governed batch is available"}), 400
+        graph, _stats = _build_governance_graph(conn, batch_id, _normalize_plant_code(request.args.get("plant_code")), 300)
+        node_id = f"master:{mdm_code}"
+        if node_id not in graph:
+            return jsonify({"error": "master not found in graph"}), 404
+        neighbors = [{"id": neighbor, **graph.nodes[neighbor], "relation": graph.edges[node_id, neighbor]["relation"]}
+                     for neighbor in graph.neighbors(node_id)]
+        return jsonify({"batch_id": batch_id, "mdm_code": mdm_code, "neighbors": neighbors,
+                        "degree": graph.degree(node_id), "trace_id": g.trace_id})
+
+
+@app.get("/api/blockchain/blocks")
+def audit_blocks():
+    with db_connect() as conn:
+        batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"batch_id": None, "blocks": [], "verification": {"valid": True, "block_count": 0}})
+        blocks = _rows(conn, "SELECT * FROM audit_blocks WHERE batch_id = ? ORDER BY height DESC LIMIT 100", (batch_id,))
+        for block in blocks:
+            block["payload"] = json.loads(block.pop("payload_json") or "{}")
+        return jsonify({"batch_id": batch_id, "blocks": blocks, "verification": _verify_audit_chain(conn, batch_id)})
+
+
+@app.get("/api/blockchain/verify")
+def verify_blockchain():
+    with db_connect() as conn:
+        batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"batch_id": None, "valid": True, "block_count": 0, "errors": []})
+        return jsonify(_verify_audit_chain(conn, batch_id))
 
 
 @app.post("/api/ocr")
@@ -1908,6 +2688,19 @@ def decide_review(review_id: int):
             conn.execute("UPDATE mappings SET decision = ?, applied_rules = ? WHERE batch_id = ? AND mdm_code = ?", (decision, "R005-审核批准" if action == "MERGE" else "R007-审核批准新建", review["batch_id"], review["mdm_code"]))
         conn.execute("UPDATE reviews SET status = ?, approved_action = ?, approved_at = ? WHERE id = ?", ("SKIPPED" if action == "SKIP" else "APPROVED", action, _utc_now(), review_id))
         batch_id = review["batch_id"]
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM reviews WHERE batch_id = ? AND status = 'REVIEW'", (batch_id,)
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM reviews WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+        _set_workflow_step(
+            conn, batch_id, "REVIEW", "COMPLETED" if pending == 0 else "ACTION_REQUIRED",
+            100 if pending == 0 else round((total - pending) / max(1, total) * 100),
+            {"pending": pending, "resolved": total - pending, "total": total},
+        )
+        _append_audit_block(conn, batch_id, "REVIEW_DECIDED", "MASTER", review["mdm_code"], {
+            "review_id": review_id, "action": action, "decision": decision if action != "SKIP" else "SKIPPED",
+            "plant_code": actor_plant, "pending_reviews": pending,
+        }, actor=_clean_value(payload.get("actor")) or f"{actor_plant}审核人")
     return jsonify(get_batch_state(batch_id))
 
 
@@ -1930,6 +2723,11 @@ def create_lifecycle():
              payload.get("description", ""), payload["reason"], "PENDING", payload.get("creator", "申请人"),
              payload.get("change_of", ""), plant_code),
         )
+        if batch_id:
+            _append_audit_block(conn, batch_id, "LIFECYCLE_CREATED", "LIFECYCLE", str(cursor.lastrowid), {
+                "request_id": payload.get("request_id"), "name": payload["name"], "category": payload["category"],
+                "plant_code": plant_code, "status": "PENDING",
+            }, actor=_clean_value(payload.get("creator")) or "申请人")
     return jsonify({"id": cursor.lastrowid, "status": "PENDING"}), 201
 
 
@@ -2014,6 +2812,12 @@ def update_lifecycle(lifecycle_id: int):
             (status, mdm_code, reviewer or row["reviewer"] or "", now, now if status == "ARCHIVED" else None, lifecycle_id),
         )
         batch_id = row["batch_id"]
+        if batch_id:
+            vector_meta = _index_batch_vectors(conn, batch_id, "local") if status == "APPROVED" else None
+            _append_audit_block(conn, batch_id, "LIFECYCLE_TRANSITION", "LIFECYCLE", str(lifecycle_id), {
+                "from": current_status, "to": status, "mdm_code": mdm_code,
+                "plant_code": row["plant_code"], "vector_refresh": vector_meta,
+            }, actor=reviewer or "工作流引擎")
     return jsonify(get_batch_state(batch_id))
 
 
@@ -2071,12 +2875,88 @@ def distribute():
                              "standard_name": known.get(code, ""), "sync_mode": mode, "sync_frequency": "MANUAL",
                              "status": status, "message": message, "plant_code": plant_code,
                              "instruction": instruction})
+        success_count = sum(item["status"] == "SUCCESS" for item in logs)
+        failed_count = sum(item["status"] == "FAILED" for item in logs)
+        if success_count:
+            _set_workflow_step(conn, batch_id, "DISTRIBUTE", "COMPLETED", 100, {
+                "success_count": success_count, "failed_count": failed_count,
+                "plant_code": plant_code, "target_systems": targets,
+            })
+            _set_workflow_step(conn, batch_id, "FEEDBACK", "ACTION_REQUIRED", 0, {
+                "feedback_count": conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0],
+                "plant_code": plant_code,
+            })
+        _append_audit_block(conn, batch_id, "MASTER_DISTRIBUTED", "DISTRIBUTION", plant_code, {
+            "target_systems": targets, "master_count": len(master_codes), "success_count": success_count,
+            "failed_count": failed_count, "mode": mode, "instruction": instruction,
+        }, actor=_clean_value(payload.get("actor")) or "分发Agent")
     return jsonify({
         "simulated": True, "intent": intent, "plant_code": plant_code,
         "plant_name": PLANTS[plant_code], "logs": logs,
-        "success_count": sum(item["status"] == "SUCCESS" for item in logs),
-        "failed_count": sum(item["status"] == "FAILED" for item in logs),
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "workflow_endpoint": f"/api/workflow/{batch_id}",
     })
+
+
+@app.post("/api/feedback")
+def submit_plant_feedback():
+    payload = request.get_json(silent=True) or {}
+    mdm_code = _clean_value(payload.get("mdm_code"))
+    if not mdm_code:
+        return jsonify({"error": "mdm_code is required"}), 400
+    plant_code = _normalize_plant_code(payload.get("plant_code"))
+    if plant_code not in PLANTS or plant_code == "GROUP":
+        return jsonify({"error": "plant_code must identify a factory", "supported_plants": PLANTS}), 400
+    try:
+        rating = int(payload.get("rating", 5))
+    except (TypeError, ValueError):
+        return jsonify({"error": "rating must be an integer from 1 to 5"}), 400
+    if rating < 1 or rating > 5:
+        return jsonify({"error": "rating must be between 1 and 5"}), 400
+    accepted = bool(payload.get("accepted", True))
+    with db_connect() as conn:
+        batch_id = payload.get("batch_id") or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"error": "no governed batch is available"}), 400
+        master = conn.execute(
+            "SELECT * FROM batch_masters WHERE batch_id = ? AND mdm_code = ?", (batch_id, mdm_code)
+        ).fetchone()
+        if not master:
+            return jsonify({"error": "master not found in batch"}), 404
+        if not _master_distributable_to_plant(master["plant_codes"], plant_code):
+            return jsonify({"error": "master is outside the factory scope"}), 403
+        distributed = conn.execute(
+            """SELECT 1 FROM distribution_logs WHERE batch_id = ? AND mdm_code = ?
+               AND plant_code = ? AND status = 'SUCCESS' LIMIT 1""", (batch_id, mdm_code, plant_code)
+        ).fetchone()
+        if not distributed:
+            return jsonify({"error": "feedback requires a successful factory distribution first"}), 409
+        now = _utc_now()
+        cursor = conn.execute(
+            """INSERT INTO plant_feedback
+               (batch_id, plant_code, mdm_code, accepted, rating, comment, actor, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (batch_id, plant_code, mdm_code, int(accepted), rating, _clean_value(payload.get("comment")),
+             _clean_value(payload.get("actor")) or "工厂数据管理员", now),
+        )
+        vector_meta = _index_batch_vectors(conn, batch_id, "local")
+        feedback_count = conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+        _set_workflow_step(conn, batch_id, "FEEDBACK", "COMPLETED", 100, {
+            "feedback_count": feedback_count, "latest_plant": plant_code,
+            "vector_refresh": {"indexed": vector_meta["indexed"], "model": vector_meta["model"]},
+        })
+        block = _append_audit_block(conn, batch_id, "FACTORY_FEEDBACK", "MASTER", mdm_code, {
+            "feedback_id": cursor.lastrowid, "plant_code": plant_code, "accepted": accepted,
+            "rating": rating, "comment": _clean_value(payload.get("comment")),
+            "knowledge_refresh": vector_meta,
+        }, actor=_clean_value(payload.get("actor")) or f"{PLANTS[plant_code]}数据管理员")
+        workflow = _workflow_payload(conn, batch_id)
+    return jsonify({
+        "id": cursor.lastrowid, "batch_id": batch_id, "plant_code": plant_code, "mdm_code": mdm_code,
+        "accepted": accepted, "rating": rating, "knowledge_refresh": vector_meta,
+        "audit_block": block, "workflow": workflow, "closed_loop": workflow["closed_loop"],
+    }), 201
 
 
 @app.delete("/api/distribution-logs")
@@ -2093,6 +2973,7 @@ def clear_all_data():
         return jsonify({"error": "confirmation token is required"}), 400
     with db_connect() as conn:
         for table in (
+            "audit_blocks", "plant_feedback", "workflow_steps", "vector_embeddings",
             "distribution_logs", "lifecycle", "search_history", "quality_reports", "reviews",
             "mappings", "batch_masters", "records", "batches", "masters",
         ):
@@ -2116,6 +2997,16 @@ init_db()
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG") == "1"
+    host = os.environ.get("MDM_HOST", "0.0.0.0")
+    port = int(os.environ.get("MDM_PORT", "5000"))
+    production = os.environ.get("MDM_PRODUCTION") == "1"
     print("M-AI Master Flask backend")
-    print("Open http://127.0.0.1:5000")
-    app.run(debug=debug, host=os.environ.get("MDM_HOST", "127.0.0.1"), port=int(os.environ.get("MDM_PORT", "5000")))
+    print(f"Listening on http://{host}:{port}")
+    if production:
+        from waitress import serve
+
+        threads = max(2, int(os.environ.get("MDM_THREADS", "8")))
+        logger.info("starting Waitress host=%s port=%s threads=%s database=%s", host, port, threads, DB_PATH)
+        serve(app, host=host, port=port, threads=threads, channel_timeout=120)
+    else:
+        app.run(debug=debug, host=host, port=port)

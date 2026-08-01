@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import sys
@@ -14,8 +15,11 @@ from unittest.mock import patch
 PROJECT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = PROJECT_DIR / "backend"
 SAMPLE_CSV = PROJECT_DIR / "备品备件脏数据.csv"
+INDUSTRIAL_CSV = PROJECT_DIR / "industrial_parts_dirty_data.csv"
 TEST_DIR = tempfile.TemporaryDirectory(prefix="mai-master-tests-")
 os.environ["MDM_DB_PATH"] = str(Path(TEST_DIR.name) / "test.db")
+os.environ.pop("MDM_AUTH_PASSWORD", None)
+os.environ.pop("MDM_PRODUCTION", None)
 for api_key_name in ("DASHSCOPE_API_KEY", "ZHIPU_API_KEY", "OPENAI_API_KEY"):
     os.environ.pop(api_key_name, None)
 sys.path.insert(0, str(BACKEND_DIR))
@@ -43,12 +47,88 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json()
 
+    def test_optional_basic_authentication(self):
+        token = base64.b64encode(b"operator:strong-test-password").decode("ascii")
+        with patch.object(backend, "AUTH_USER", "operator"), patch.object(
+            backend, "AUTH_PASSWORD", "strong-test-password"
+        ):
+            self.assertEqual(self.client.get("/").status_code, 401)
+            self.assertEqual(self.client.get("/api/health").status_code, 200)
+            authorized = self.client.get("/", headers={"Authorization": f"Basic {token}"})
+            self.assertEqual(authorized.status_code, 200)
+            authorized.close()
+
+    def test_delivery_files_use_production_servers_and_persistent_storage(self):
+        start_windows = (PROJECT_DIR / "start.bat").read_text(encoding="utf-8")
+        start_unix = (PROJECT_DIR / "start.sh").read_text(encoding="utf-8")
+        dockerfile = (BACKEND_DIR / "Dockerfile").read_text(encoding="utf-8")
+        compose = (PROJECT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        requirements = (BACKEND_DIR / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("MDM_HOST=0.0.0.0", start_windows)
+        self.assertIn("MDM_PRODUCTION=1", start_windows)
+        self.assertIn("waitress", requirements)
+        self.assertIn("gunicorn", start_unix)
+        self.assertNotIn("MDM_FRONTEND_DIR=/app/frontend", dockerfile)
+        self.assertIn("/app/data", dockerfile)
+        self.assertIn("./runtime/data:/app/data", compose)
+
+    def test_dynamic_field_mapping_preserves_industrial_extensions(self):
+        frame = backend.pd.read_csv(INDUSTRIAL_CSV, encoding="utf-8-sig")
+        mapping = backend.map_fields(frame.columns.tolist())
+        self.assertEqual(mapping["material_code"], "物料编码")
+        self.assertEqual(mapping["material_name"], "物料名称")
+        self.assertEqual(mapping["description"], "物料描述")
+        self.assertEqual(mapping["category"], "物料类别")
+        self.assertEqual(mapping["unit"], "计量单位")
+        self.assertNotIn("system_source", mapping)
+        self.assertNotIn("create_time", mapping)
+
+        payloads = []
+        for _ in range(2):
+            with INDUSTRIAL_CSV.open("rb") as source:
+                response = self.client.post(
+                    "/api/upload",
+                    data={"file": (io.BytesIO(source.read()), INDUSTRIAL_CSV.name)},
+                    content_type="multipart/form-data",
+                )
+            self.assertEqual(response.status_code, 201, response.get_json())
+            payloads.append(response.get_json())
+
+        self.assertEqual(payloads[0]["summary"], payloads[1]["summary"])
+        self.assertEqual(payloads[0]["summary"]["record_count"], len(frame))
+        first = payloads[0]["records"][0]
+        self.assertEqual(first["system_source"], "CSV导入")
+        self.assertTrue(first["create_time"])
+        self.assertEqual(first["category"], frame.iloc[0]["物料类别"])
+        raw_fields = first["_ext"]["raw_fields"]
+        for column in ("物料子类", "参考价格", "库存数量", "供应商", "规格型号", "状态"):
+            self.assertIn(column, raw_fields)
+
+        duplicate_mapping = {
+            "material_code": "物料编码", "material_name": "物料名称", "description": "物料名称"
+        }
+        normalized = backend.normalize_records(frame.head(1).to_dict(orient="records"), duplicate_mapping)
+        self.assertEqual(normalized[0]["material_name"], frame.iloc[0]["物料名称"])
+        self.assertEqual(normalized[0]["description"], "")
+
     def test_end_to_end_sample_flow(self):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.get_json()["storage"], "sqlite")
+        self.assertEqual(health.get_json()["version"], "4.1")
+        self.assertTrue(health.get_json()["ready"])
+        self.assertFalse(health.get_json()["authentication"])
         root_response = self.client.get("/")
         self.assertEqual(root_response.status_code, 200)
+        root_html = root_response.get_data(as_text=True)
+        self.assertIn("workflowDefinition", root_html)
+        self.assertIn('/agent/capabilities', root_html)
+        self.assertIn("getWorkflowSteps", root_html)
+        self.assertIn("ACTIVE_BATCH_KEY", root_html)
+        self.assertIn("getActiveBatchId", root_html)
+        self.assertIn("AUTO_FIELD_DEFAULTS", root_html)
+        self.assertIn("out._extra", root_html)
+        self.assertEqual(root_response.headers["X-Content-Type-Options"], "nosniff")
         root_response.close()
 
         state = self.upload_sample()
@@ -214,7 +294,9 @@ class FlaskApiTest(unittest.TestCase):
 
         capabilities = self.client.get("/api/agent/capabilities")
         self.assertEqual(capabilities.status_code, 200)
-        self.assertEqual(len(capabilities.get_json()["workflow"]), 6)
+        capability_payload = capabilities.get_json()
+        self.assertEqual(len(capability_payload["workflow"]), 8)
+        self.assertEqual(capability_payload["workflow"][-1]["code"], "FEEDBACK")
 
     def test_qwen_embedding_request_and_native_dimension(self):
         class FakeResponse:
@@ -327,6 +409,92 @@ class FlaskApiTest(unittest.TestCase):
             },
         )
         self.assertEqual(rejected.status_code, 400)
+
+    def test_persistent_vector_store_and_search(self):
+        state = self.upload_sample()
+        batch_id = state["batch"]["batch_id"]
+        self.assertEqual(state["vector_index"]["count"], 72)
+        self.assertEqual(state["vector_index"]["indexes"][0]["model"], "feature-hash-v1")
+
+        search = self.client.post("/api/vectors/search", json={
+            "batch_id": batch_id, "query": "SKF 6312 轴承", "model": "qwen", "top_k": 5,
+        })
+        self.assertEqual(search.status_code, 200, search.get_json())
+        payload = search.get_json()
+        self.assertEqual(payload["provider"], "local")
+        self.assertEqual(payload["dimension"], 384)
+        self.assertEqual(len(payload["results"]), 5)
+        self.assertGreaterEqual(payload["results"][0]["score"], payload["results"][-1]["score"])
+
+        rebuilt = self.client.post("/api/vectors/rebuild", json={"batch_id": batch_id, "model": "local"})
+        self.assertEqual(rebuilt.status_code, 200)
+        self.assertEqual(rebuilt.get_json()["indexed"], 72)
+        stats = self.client.get(f"/api/vectors/stats?batch_id={batch_id}").get_json()
+        self.assertEqual(stats["count"], 72)
+
+    def test_networkx_graph_and_lineage(self):
+        state = self.upload_sample()
+        batch_id = state["batch"]["batch_id"]
+        response = self.client.get(f"/api/graph?batch_id={batch_id}&raw_limit=30")
+        self.assertEqual(response.status_code, 200)
+        graph = response.get_json()
+        self.assertEqual(graph["engine"], "NetworkX")
+        self.assertGreater(graph["stats"]["nodes"], 72)
+        self.assertGreater(graph["stats"]["edges"], 72)
+        self.assertIn("MASTER", graph["stats"]["types"])
+        self.assertTrue(all("x" in node and "centrality" in node for node in graph["nodes"]))
+
+        mdm_code = state["masters"][0]["mdm_code"]
+        lineage = self.client.get(f"/api/graph/lineage/{mdm_code}?batch_id={batch_id}")
+        self.assertEqual(lineage.status_code, 200)
+        self.assertGreater(lineage.get_json()["degree"], 0)
+
+    def test_qwen_agent_fallback_and_traceability(self):
+        response = self.client.post("/api/agent/plan", json={"task": "治理新批次并分发到上海工厂"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["runtime"]["active"])
+        self.assertEqual(payload["runtime"]["method"], "确定性Agent编排（降级）")
+        self.assertEqual(len(payload["plan"]["steps"]), 8)
+        self.assertTrue(response.headers.get("X-Trace-Id", "").startswith("TRC-"))
+
+    def test_audit_chain_and_factory_feedback_close_loop(self):
+        response = self.client.post("/api/batches", json={
+            "filename": "closed-loop.json", "plant_code": "GROUP", "records": [
+                {"material_code": "HQ-CL-01", "system_source": "SAP", "material_name": "SKF 6205深沟球轴承",
+                 "description": "集团标准 6205 bearing"}
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        state = response.get_json()
+        batch_id = state["batch"]["batch_id"]
+        master_code = state["masters"][0]["mdm_code"]
+        self.assertEqual(len(state["workflow"]["steps"]), 8)
+        self.assertFalse(state["workflow"]["closed_loop"])
+        self.assertTrue(state["audit_chain"]["valid"])
+
+        distributed = self.client.post("/api/distribute", json={
+            "batch_id": batch_id, "plant_code": "SHANGHAI", "target_systems": ["SAP系统"],
+            "master_codes": [master_code], "instruction": "同步到上海工厂SAP",
+        })
+        self.assertEqual(distributed.status_code, 200, distributed.get_json())
+        self.assertEqual(distributed.get_json()["success_count"], 1)
+
+        feedback = self.client.post("/api/feedback", json={
+            "batch_id": batch_id, "plant_code": "SHANGHAI", "mdm_code": master_code,
+            "accepted": True, "rating": 5, "comment": "现场型号和规格一致，可复用", "actor": "上海工厂数据管理员",
+        })
+        self.assertEqual(feedback.status_code, 201, feedback.get_json())
+        feedback_payload = feedback.get_json()
+        self.assertTrue(feedback_payload["closed_loop"])
+        self.assertEqual(feedback_payload["knowledge_refresh"]["model"], "feature-hash-v1")
+
+        verification = self.client.get(f"/api/blockchain/verify?batch_id={batch_id}").get_json()
+        self.assertTrue(verification["valid"])
+        self.assertGreaterEqual(verification["block_count"], 3)
+        blocks = self.client.get(f"/api/blockchain/blocks?batch_id={batch_id}").get_json()
+        self.assertEqual(blocks["blocks"][0]["event_type"], "FACTORY_FEEDBACK")
+        self.assertTrue(blocks["verification"]["valid"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,11 @@
+.git
+.venv
+runtime
+__pycache__
+*.py[cod]
+*.db
+*.sqlite*
+*.log
+*.pdf
+*.pptx
+*.docx

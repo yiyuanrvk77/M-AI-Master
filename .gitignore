@@ -1,4 +1,6 @@
 backend/.env
+.venv/
+runtime/
 backend/server.stdout.log
 backend/server.stderr.log
 __pycache__/

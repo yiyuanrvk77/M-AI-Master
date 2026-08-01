@@ -1,0 +1,26 @@
+services:
+  mai-master:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: mai-master:4.1
+    container_name: mai-master
+    restart: unless-stopped
+    ports:
+      - "${MDM_PORT:-5000}:5000"
+    environment:
+      MDM_PRODUCTION: "1"
+      MDM_AUTH_USER: "${MDM_AUTH_USER:-admin}"
+      MDM_AUTH_PASSWORD: "${MDM_AUTH_PASSWORD:-}"
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      ZHIPU_API_KEY: "${ZHIPU_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    volumes:
+      - ./runtime/data:/app/data
+      - ./runtime/logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

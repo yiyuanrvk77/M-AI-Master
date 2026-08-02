@@ -1,77 +1,63 @@
-# M-AI Master
+# M-AI Master 4.2
 
-面向大型制造集团的 AI 主数据智能治理与智能共享系统。当前版本提供动态 CSV 字段识别、语义查重、黄金主数据归并、向量检索、图谱血缘、审核、跨工厂分发和反馈回流闭环。
+面向大型制造集团的 AI 物料主数据智能治理与共享演示系统。系统以 Flask + SQLite 为权威运行端，完成多源数据接入、标准识别、Embedding 向量入库、图谱辅助查重、多主体审核、质量评估、跨工厂分发和工厂反馈回流八步闭环。
 
-## Windows 一键运行
+## Windows 运行
 
-1. 安装 Python 3.11 或更高版本，安装时勾选 `Add Python to PATH`。
-2. 双击 `start.bat`。首次启动会在项目内创建独立的 `.venv` 并安装依赖。
-3. 本机打开 `http://127.0.0.1:5000`；其他电脑打开启动窗口打印的 `LAN` 地址。
+建议安装 Python 3.11 x64，并在安装时启用 `Add Python to PATH`。
 
-服务使用 Waitress 生产 WSGI，不再使用 Flask 开发服务器。启动窗口必须保持打开，按 `Ctrl+C` 停止。
+1. 普通稳定版：双击 `start.bat`。
+2. 真实本地 OCR：先双击 `install-ocr.bat`，安装完成后双击 `start-ocr.bat`。
+3. 浏览器访问启动窗口显示的 `http://127.0.0.1:5000`；局域网设备使用窗口打印的 `LAN` 地址。
 
-## 换电脑或换 WiFi
+普通稳定版不安装大型 OCR 依赖。此时 `/api/ocr` 会尝试 Qwen-VL；若密钥或网络不可用，再明确降级为规则解析，治理流程不会崩溃。真实 OCR 版在独立 `.venv-ocr` 中运行，不影响普通 `.venv`。
 
-- 复制整个项目目录，但不要复制 `.venv`；新电脑首次运行会重新创建适配本机的环境。
-- 需要迁移业务数据时，先停止旧服务，再复制 `runtime/data/mdm_data.db`。兼容旧版本的数据库可能位于 `backend/mdm_data.db`。
-- 更换 WiFi 后服务器 IP 可能变化，以新一次启动时打印的 `LAN` 地址为准。正式部署建议配置固定 IP、DHCP 地址保留或企业 DNS 域名。
-- 其他设备无法访问时，以管理员 PowerShell 放行端口：
+## 核心证据
 
-```powershell
-New-NetFirewallRule -DisplayName "M-AI Master 5000" -Direction Inbound -Protocol TCP -LocalPort 5000 -Action Allow
-```
-
-前端始终使用相对 `/api` 接口，因此更换电脑、IP、域名或 WiFi 无需修改 HTML。
+- `evaluation/ground_truth_50.csv`：50 条独立人工分组真值标签，共 27 个真值组。
+- `POST /api/evaluation/run`：输出 Pairwise Precision/Recall/F1、B³ 聚类指标、阈值扫描、数据集哈希和错误样例。
+- `POST /api/explain`：基于真实来源记录、关键属性、冲突与命中规则生成治理解释；无大模型时使用事实模板。
+- `POST /api/ocr`：PaddleOCR 本地识别、Qwen-VL 增强、规则兜底三级适配器。
+- `GET /api/blockchain/verify`：验证 SHA-256 防篡改链式审计账本。该实现不是公链或联盟链共识网络。
 
 ## 环境配置
 
-复制 `backend/.env.example` 为 `backend/.env`。常用配置：
+复制 `backend/.env.example` 为 `backend/.env`，按需填写：
 
+- `DASHSCOPE_API_KEY`：通义 Embedding、Agent 解释和 Qwen-VL。
+- `MDM_AUTH_PASSWORD`：启用浏览器 Basic Authentication。
+- `MDM_DB_PATH`：SQLite 持久化路径。
 - `MDM_HOST=0.0.0.0`：允许局域网访问。
-- `MDM_PORT=5000`：监听端口。
-- `MDM_DB_PATH=../runtime/data/mdm_data.db`：持久化数据库。
-- `MDM_LOG_DIR=../runtime/logs`：轮转日志目录。
-- `MDM_AUTH_USER`、`MDM_AUTH_PASSWORD`：可选浏览器基础认证；设置密码后访问页面会要求登录。
-- `DASHSCOPE_API_KEY`：启用通义 `text-embedding-v3`；缺失或网络失败会自动降级，不影响治理流程运行。
+- `MDM_PADDLEOCR_ENABLED=1`：启用本地 OCR 懒加载。
 
-不要把包含真实密钥或密码的 `backend/.env` 上传到代码仓库。
+不要把真实密钥、密码、`.env`、`.venv` 或运行数据库提交到代码仓库。
 
-## Docker 交付
+## Docker
 
-适合在一台企业 Linux/Windows Docker 主机上集中部署：
+基础版：
 
 ```bash
 docker compose up -d --build
-docker compose ps
 ```
 
-访问 `http://服务器IP:5000`，健康检查为 `http://服务器IP:5000/api/health`。数据库和日志分别持久化在 `runtime/data`、`runtime/logs`，升级镜像不会删除数据。
-
-设置认证后再启动：
+包含 PaddleOCR 的 CPU 镜像：
 
 ```powershell
-$env:MDM_AUTH_USER="admin"
-$env:MDM_AUTH_PASSWORD="请替换为强密码"
+$env:MDM_INSTALL_OCR="1"
 docker compose up -d --build
 ```
 
+数据和日志分别持久化到 `runtime/data` 与 `runtime/logs`。
+
+## 测试
+
+```powershell
+python -m unittest -v test_api.py
+python -m unittest -v test_chaos.py
+```
+
+健康检查：`GET /api/health`。响应中的 `ready=true` 只代表应用和数据库可用；OCR、大模型和远程 Embedding 的实际状态在 `capabilities` 中分别显示。
+
 ## 企业部署边界
 
-当前 SQLite 架构适合单节点部门级试点或竞赛交付，Gunicorn 固定为一个进程并使用线程并发，避免多进程写入冲突。若要多服务器高可用、数百并发或跨地域部署，应把存储迁移到 PostgreSQL，并接入企业 SSO、HTTPS 反向代理、集中日志、密钥管理和定时备份；不能把开放端口的无密码 HTTP 服务直接暴露到互联网。
-
-上线前至少完成：
-
-- 设置 `MDM_AUTH_PASSWORD` 并通过 Nginx/企业网关启用 HTTPS。
-- 固定服务器地址并限制防火墙来源网段。
-- 定期备份数据库和验证恢复。
-- 使用 `/api/health` 接入监控；`ready=true` 才表示数据库可用。
-- 在预生产环境用真实字段和真实数据量完成验收。
-
-## 主要文件
-
-- `backend/app.py`：Flask API、治理引擎与闭环逻辑。
-- `backend/index.html`：单页前端，接口使用同源相对路径。
-- `backend/requirements.txt`：Python 依赖。
-- `start.bat` / `start.sh`：Windows / Linux 生产启动。
-- `backend/Dockerfile` / `docker-compose.yml`：容器交付。
-- `test_api.py`：端到端回归测试。
+当前 SQLite 版本适合竞赛、单节点试点和部门级验证。多服务器高可用、数百并发或跨地域生产部署应迁移到 PostgreSQL，并接入企业 SSO、HTTPS 网关、集中日志、密钥管理、定时备份与真实 SAP/EAM/MES/WMS 连接器。前端工厂视角用于演示，正式权限边界必须由后端身份与数据范围策略强制执行。

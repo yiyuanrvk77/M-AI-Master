@@ -64,9 +64,13 @@ class FlaskApiTest(unittest.TestCase):
         dockerfile = (BACKEND_DIR / "Dockerfile").read_text(encoding="utf-8")
         compose = (PROJECT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         requirements = (BACKEND_DIR / "requirements.txt").read_text(encoding="utf-8")
+        root_requirements = (PROJECT_DIR / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("MDM_HOST=0.0.0.0", start_windows)
         self.assertIn("MDM_PRODUCTION=1", start_windows)
         self.assertIn("waitress", requirements)
+        self.assertIn("backend/requirements.txt", root_requirements)
+        self.assertTrue((PROJECT_DIR / "start-ocr.bat").exists())
+        self.assertTrue((PROJECT_DIR / "evaluation" / "ground_truth_50.csv").exists())
         self.assertIn("gunicorn", start_unix)
         self.assertNotIn("MDM_FRONTEND_DIR=/app/frontend", dockerfile)
         self.assertIn("/app/data", dockerfile)
@@ -115,7 +119,7 @@ class FlaskApiTest(unittest.TestCase):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.get_json()["storage"], "sqlite")
-        self.assertEqual(health.get_json()["version"], "4.1")
+        self.assertEqual(health.get_json()["version"], "4.2")
         self.assertTrue(health.get_json()["ready"])
         self.assertFalse(health.get_json()["authentication"])
         root_response = self.client.get("/")
@@ -124,6 +128,8 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn("workflowDefinition", root_html)
         self.assertIn('/agent/capabilities', root_html)
         self.assertIn("getWorkflowSteps", root_html)
+        self.assertIn('id="plantView"', root_html)
+        self.assertIn("standard_kb", root_html)
         self.assertIn("ACTIVE_BATCH_KEY", root_html)
         self.assertIn("getActiveBatchId", root_html)
         self.assertIn("AUTO_FIELD_DEFAULTS", root_html)
@@ -147,6 +153,10 @@ class FlaskApiTest(unittest.TestCase):
         self.assertTrue(state["records"][0]["_ext"])
         self.assertFalse(state["governance"]["embedding_active"])
         self.assertIn("Jaccard", state["governance"]["method"])
+        quality_systems = state["quality_report"]["systems"]
+        self.assertEqual(sum(item["recordCount"] for item in quality_systems.values()), 234)
+        for item in quality_systems.values():
+            self.assertTrue({"completeness", "accuracy", "consistency", "score"}.issubset(item))
         self.assertFalse(any("润滑油" in item["standard_name"] and "MPa" in item["standard_name"] for item in state["masters"]))
         self.assertFalse(any("DN2 " in item["standard_name"] for item in state["masters"]))
         batch_id = state["batch"]["batch_id"]
@@ -249,6 +259,7 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(health["semantic"]["model"], "text-embedding-v3")
         self.assertEqual(health["semantic"]["dimension"], 1024)
         self.assertEqual(health["semantic"]["configured_models"], [])
+        self.assertEqual(health["capabilities"]["standard_rag"]["count"], 10)
 
         semantic = self.client.post(
             "/api/semantic",
@@ -280,6 +291,8 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(ocr_payload["brand"], "SKF")
         self.assertEqual(ocr_payload["model"], "6312-2RS1")
         self.assertTrue(ocr_payload["standard_name_preview"])
+        self.assertFalse(ocr_payload["real_ocr"])
+        self.assertEqual(ocr_payload["provider"], "rule-fallback")
 
         classified = self.client.post(
             "/api/classify",
@@ -291,12 +304,60 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(classified_payload["standard"], "SY/T5497-2018")
         self.assertEqual(classified_payload["plant_code"], "SHANGHAI")
         self.assertEqual(len(classified_payload["candidates"]), 3)
+        self.assertEqual(classified_payload["rag"]["namespace"], "standard_kb")
+        self.assertEqual(len(classified_payload["standard_references"]), 3)
+
+        standard_search = self.client.post("/api/standards/search", json={
+            "query": "DN150 铸钢法兰闸阀", "top_k": 3,
+        })
+        self.assertEqual(standard_search.status_code, 200, standard_search.get_json())
+        self.assertEqual(standard_search.get_json()["namespace"], "standard_kb")
+        self.assertEqual(len(standard_search.get_json()["results"]), 3)
+        self.assertEqual(self.client.get("/api/standards/stats").get_json()["count"], 10)
 
         capabilities = self.client.get("/api/agent/capabilities")
         self.assertEqual(capabilities.status_code, 200)
         capability_payload = capabilities.get_json()
         self.assertEqual(len(capability_payload["workflow"]), 8)
         self.assertEqual(capability_payload["workflow"][-1]["code"], "FEEDBACK")
+
+    def test_real_ocr_adapter_ground_truth_evaluation_and_explanation(self):
+        with patch.object(backend.ocr_engine, "_paddle_recognize", return_value=(
+            "SKF 6312-2RS1 深沟球轴承 316L 1.6MPa", 0.94
+        )):
+            ocr = self.client.post(
+                "/api/ocr", data={"image": (io.BytesIO(b"real-image-bytes"), "nameplate.jpg")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(ocr.status_code, 200, ocr.get_json())
+        self.assertTrue(ocr.get_json()["real_ocr"])
+        self.assertEqual(ocr.get_json()["provider"], "paddleocr-local")
+        self.assertEqual(ocr.get_json()["brand"], "SKF")
+        self.assertEqual(ocr.get_json()["pressure"], "1.6MPa")
+
+        metadata = self.client.get("/api/evaluation/ground-truth")
+        self.assertEqual(metadata.status_code, 200, metadata.get_json())
+        self.assertEqual(metadata.get_json()["record_count"], 50)
+        self.assertEqual(metadata.get_json()["group_count"], 27)
+        evaluation = self.client.post("/api/evaluation/run", json={
+            "model": "local", "threshold": 0.55, "thresholds": [0.50, 0.55, 0.60],
+        })
+        self.assertEqual(evaluation.status_code, 200, evaluation.get_json())
+        result = evaluation.get_json()["result"]
+        self.assertEqual(result["evaluated_records"], 50)
+        self.assertIn("precision", result["pairwise"])
+        self.assertIn("f1", result["b3"])
+
+        state = self.upload_sample()
+        explanation = self.client.post("/api/explain", json={
+            "batch_id": state["batch"]["batch_id"], "mdm_code": state["masters"][0]["mdm_code"],
+            "use_llm": False,
+        })
+        self.assertEqual(explanation.status_code, 200, explanation.get_json())
+        payload = explanation.get_json()
+        self.assertIn(state["masters"][0]["mdm_code"], payload["explanation"])
+        self.assertEqual(payload["runtime"]["method"], "事实模板解释（降级）")
+        self.assertTrue(payload["runtime"]["evidence_hash"])
 
     def test_qwen_embedding_request_and_native_dimension(self):
         class FakeResponse:
@@ -457,6 +518,18 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(payload["runtime"]["method"], "确定性Agent编排（降级）")
         self.assertEqual(len(payload["plan"]["steps"]), 8)
         self.assertTrue(response.headers.get("X-Trace-Id", "").startswith("TRC-"))
+
+    def test_one_click_competition_demo_completes_all_eight_steps(self):
+        response = self.client.post("/api/demo/run", json={})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["summary"]["record_count"], 4)
+        self.assertEqual(len(payload["workflow"]["steps"]), 8)
+        self.assertTrue(payload["workflow"]["closed_loop"])
+        self.assertTrue(all(step["status"] == "COMPLETED" for step in payload["workflow"]["steps"]))
+        self.assertEqual(payload["demo_execution"]["factory_feedback"], 2)
+        self.assertGreaterEqual(payload["demo_execution"]["distribution_tasks"], 4)
+        self.assertTrue(payload["audit_chain"]["valid"])
 
     def test_audit_chain_and_factory_feedback_close_loop(self):
         response = self.client.post("/api/batches", json={

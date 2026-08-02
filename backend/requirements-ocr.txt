@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Optional competition OCR runtime. Install with install-ocr.bat on Windows.
+paddlepaddle>=3.2,<4
+paddleocr>=3.3,<4

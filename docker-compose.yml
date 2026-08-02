@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    image: mai-master:4.1
+      args:
+        INSTALL_OCR: "${MDM_INSTALL_OCR:-0}"
+    image: mai-master:4.2
     container_name: mai-master
     restart: unless-stopped
     ports:
@@ -15,6 +17,8 @@ services:
       DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
       ZHIPU_API_KEY: "${ZHIPU_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      QWEN_VL_MODEL: "${QWEN_VL_MODEL:-qwen-vl-plus}"
+      MDM_PADDLEOCR_ENABLED: "${MDM_PADDLEOCR_ENABLED:-1}"
     volumes:
       - ./runtime/data:/app/data
       - ./runtime/logs:/app/logs

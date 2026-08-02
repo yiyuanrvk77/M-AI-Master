@@ -30,16 +30,16 @@ if not exist "%~dp0runtime\logs" mkdir "%~dp0runtime\logs"
 
 set "LOCAL_URL=http://127.0.0.1:%MDM_PORT%"
 set "HEALTH_URL=%LOCAL_URL%/api/health"
-set "VENV_DIR=%~dp0.venv"
+if /i "%MDM_OCR_RUNTIME%"=="1" (set "VENV_DIR=%~dp0.venv-ocr") else (set "VENV_DIR=%~dp0.venv")
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
 echo ============================================
 echo   M-AI Master - Enterprise Launcher
 echo ============================================
 
-powershell -NoProfile -Command "try { $r=Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if($r.ready -eq $true -and $r.version -eq '4.1'){exit 0}; exit 1 } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $r=Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if($r.ready -eq $true -and $r.version -eq '4.2'){exit 0}; exit 1 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
-    echo M-AI Master 4.1 is already running.
+    echo M-AI Master 4.2 is already running.
     echo Local: %LOCAL_URL%
     if not defined MDM_NO_BROWSER start "" "%LOCAL_URL%"
     exit /b 0
@@ -84,11 +84,19 @@ echo [1/4] Python runtime:
 if errorlevel 1 goto runtime_error
 
 echo [2/4] Checking dependencies...
-"%VENV_PYTHON%" -c "import flask,chardet,networkx,numpy,pandas,requests,sklearn,waitress" >nul 2>&1
+if /i "%MDM_OCR_RUNTIME%"=="1" (
+    "%VENV_PYTHON%" -c "import flask,chardet,networkx,numpy,paddleocr,pandas,requests,sklearn,waitress" >nul 2>&1
+) else (
+    "%VENV_PYTHON%" -c "import flask,chardet,networkx,numpy,pandas,requests,sklearn,waitress" >nul 2>&1
+)
 if not errorlevel 1 goto dependencies_ready
 echo Installing dependencies into .venv. The first run may take several minutes...
 "%VENV_PYTHON%" -m pip install --upgrade pip
-"%VENV_PYTHON%" -m pip install -r "backend\requirements.txt"
+if /i "%MDM_OCR_RUNTIME%"=="1" (
+    "%VENV_PYTHON%" -m pip install -r "backend\requirements-ocr.txt"
+) else (
+    "%VENV_PYTHON%" -m pip install -r "backend\requirements.txt"
+)
 if errorlevel 1 goto dependency_error
 
 :dependencies_ready

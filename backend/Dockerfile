@@ -10,10 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
+COPY backend/requirements.txt backend/requirements-ocr.txt /app/backend/
+ARG INSTALL_OCR=0
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt && \
+    if [ "$INSTALL_OCR" = "1" ]; then python -m pip install --no-cache-dir -r /app/backend/requirements-ocr.txt; fi
 
 COPY backend /app/backend
+COPY evaluation /app/evaluation
+COPY ["备品备件脏数据.csv", "/app/备品备件脏数据.csv"]
 RUN mkdir -p /app/data /app/logs
 
 WORKDIR /app/backend

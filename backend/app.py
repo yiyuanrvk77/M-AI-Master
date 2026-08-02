@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
+import binascii
 import io
+import importlib.util
 import json
 import logging
 import os
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -61,9 +65,11 @@ FRONTEND_DIR = _config_path("MDM_FRONTEND_DIR", BASE_DIR)
 FRONTEND_FILE = os.environ.get("MDM_FRONTEND_FILE", "index.html")
 DB_PATH = _config_path("MDM_DB_PATH", BASE_DIR / "mdm_data.db")
 MAX_RECORDS = int(os.environ.get("MDM_MAX_RECORDS", "10000"))
-APP_VERSION = "4.1"
+APP_VERSION = "4.2"
 AUTH_USER = os.environ.get("MDM_AUTH_USER", "admin").strip() or "admin"
 AUTH_PASSWORD = os.environ.get("MDM_AUTH_PASSWORD", "")
+GROUND_TRUTH_PATH = PROJECT_DIR / "evaluation" / "ground_truth_50.csv"
+GROUND_TRUTH_SOURCE = PROJECT_DIR / "备品备件脏数据.csv"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MDM_MAX_UPLOAD_BYTES", 20 * 1024 * 1024))
@@ -129,6 +135,18 @@ PLANTS = {
     "SHANGHAI": "上海工厂",
     "BEIJING": "北京工厂",
 }
+STANDARD_KB = [
+    {"reference_id": "SYT-MDM-48-SEAL", "category": "机械密封", "code_prefix": "MDM-48", "title": "泵用机械密封适配分类", "keywords": "机械密封 机封 端面密封 mechanical seal face seal 波纹管 集装式"},
+    {"reference_id": "SYT-MDM-51-BEARING", "category": "深沟球轴承", "code_prefix": "MDM-51", "title": "滚动轴承适配分类", "keywords": "轴承 滚动轴承 深沟球轴承 bearing SKF FAG NSK NTN"},
+    {"reference_id": "SYT-MDM-53-GATE", "category": "闸阀", "code_prefix": "MDM-53", "title": "工业闸阀适配分类", "keywords": "闸阀 闸板阀 gate valve Z41 Z941 法兰连接"},
+    {"reference_id": "SYT-MDM-51-ORING", "category": "O型圈", "code_prefix": "MDM-51", "title": "O型密封圈适配分类", "keywords": "O型圈 O-Ring 密封圈 FKM NBR 氟橡胶 丁腈橡胶"},
+    {"reference_id": "SYT-MDM-52-FLANGE", "category": "法兰", "code_prefix": "MDM-52", "title": "管法兰适配分类", "keywords": "法兰 flange 对焊法兰 平焊法兰 盲法兰 WN PL BL RF"},
+    {"reference_id": "SYT-MDM-51-BOLT", "category": "螺栓", "code_prefix": "MDM-51", "title": "紧固件适配分类", "keywords": "螺栓 螺柱 双头螺栓 bolt stud bolt 紧固件"},
+    {"reference_id": "SYT-MDM-51-OIL", "category": "润滑油", "code_prefix": "MDM-51", "title": "工业润滑介质适配分类", "keywords": "润滑油 润滑脂 液压油 齿轮油 柴油机油 lubricant grease oil"},
+    {"reference_id": "SYT-MDM-51-FILTER", "category": "滤芯", "code_prefix": "MDM-51", "title": "工业过滤元件适配分类", "keywords": "滤芯 过滤器 滤材 filter element 液压油滤芯 空气滤芯"},
+    {"reference_id": "SYT-MDM-58-PT", "category": "压力变送器", "code_prefix": "MDM-58", "title": "压力测量仪表适配分类", "keywords": "压力变送器 transmitter pressure transmitter 3051 EJA STG 4-20mA"},
+    {"reference_id": "SYT-MDM-58-MOTOR", "category": "防爆电机", "code_prefix": "MDM-58", "title": "防爆驱动设备适配分类", "keywords": "防爆电机 隔爆电机 explosion-proof motor ex motor YB3 Exd"},
+]
 PLANT_ALIASES = {
     "集团": "GROUP", "集团总部": "GROUP", "总部": "GROUP", "group": "GROUP", "hq": "GROUP",
     "上海": "SHANGHAI", "上海工厂": "SHANGHAI", "shanghai": "SHANGHAI", "sh": "SHANGHAI",
@@ -632,6 +650,7 @@ def init_db() -> None:
                     "filename": batch["filename"], "record_count": batch["record_count"],
                     "message": "历史批次已升级到M-AI Master 4.0产品化运行模型",
                 }, actor="升级迁移器")
+        _seed_standard_kb(conn)
 
 
 class AIGovernanceEngine:
@@ -914,8 +933,12 @@ class AIGovernanceEngine:
         return " ".join(dict.fromkeys(part for part in parts if part))
 
     def govern(
-        self, records: list[dict], semantic=None, preferred_model: str = "qwen"
+        self, records: list[dict], semantic=None, preferred_model: str = "qwen",
+        similarity_threshold: float | None = None,
     ) -> tuple[list[dict], list[dict], list[dict], dict]:
+        threshold = self.SIMILARITY_THRESHOLD if similarity_threshold is None else float(similarity_threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("similarity_threshold must be between 0 and 1")
         enriched = [self.enrich(record) for record in records]
         vectors = [self.term_frequency(self.semantic_tokens(record)) for record in enriched]
         semantic_texts = [
@@ -973,7 +996,7 @@ class AIGovernanceEngine:
                     score += 0.15
                 if a["material"] and a["material"] == b["material"]:
                     score += 0.10
-                local_match = min(score, 1.0) >= self.SIMILARITY_THRESHOLD
+                local_match = min(score, 1.0) >= threshold
                 semantic_match = semantic_score >= 0.85
                 if local_match or semantic_match:
                     union(left, right)
@@ -1037,6 +1060,7 @@ class AIGovernanceEngine:
                     "confidence": round(confidence, 4), "category": category, "_ext": public_attributes,
                     "candidates": [], "status": "REVIEW", "plant_codes": ",".join(plants),
                 })
+        semantic_meta = {**semantic_meta, "local_similarity_threshold": threshold}
         return masters, reviews, mappings, semantic_meta
 
 
@@ -1216,6 +1240,197 @@ class SemanticEngine:
         right_chars = set(re.sub(r"\s+", "", _clean_value(right).lower()))
         union = left_chars | right_chars
         return len(left_chars & right_chars) / len(union) if union else 1.0
+
+
+class OCREngine:
+    """Lazy real-OCR adapter with cloud and deterministic fallbacks."""
+
+    QWEN_VL_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    def __init__(self):
+        self.paddle_enabled = os.getenv("MDM_PADDLEOCR_ENABLED", "1") != "0"
+        self.paddle_lang = os.getenv("MDM_PADDLEOCR_LANG", "ch").strip() or "ch"
+        self.qwen_model = os.getenv("QWEN_VL_MODEL", "qwen-vl-plus").strip() or "qwen-vl-plus"
+        self.qwen_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+        self._paddle = None
+        self._paddle_error = ""
+
+    def status(self) -> dict:
+        installed = importlib.util.find_spec("paddleocr") is not None
+        return {
+            "paddle_enabled": self.paddle_enabled,
+            "paddle_installed": installed,
+            "paddle_ready": bool(self._paddle),
+            "paddle_error": self._paddle_error or None,
+            "qwen_vl_configured": bool(self.qwen_key),
+            "qwen_vl_model": self.qwen_model,
+            "fallback": "rule-parser",
+        }
+
+    @staticmethod
+    def decode_data_image(value: str) -> tuple[bytes, str]:
+        encoded = _clean_value(value)
+        mime_type = "image/jpeg"
+        if encoded.startswith("data:"):
+            header, separator, encoded = encoded.partition(",")
+            if not separator or ";base64" not in header.lower():
+                raise ValueError("image data URI must use base64 encoding")
+            mime_type = header[5:].split(";", 1)[0] or mime_type
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("image contains invalid base64 data") from exc
+        return raw, mime_type
+
+    def _load_paddle(self):
+        if self._paddle is not None:
+            return self._paddle
+        if not self.paddle_enabled or importlib.util.find_spec("paddleocr") is None:
+            return None
+        try:
+            from paddleocr import PaddleOCR
+
+            try:
+                self._paddle = PaddleOCR(
+                    lang=self.paddle_lang, use_doc_orientation_classify=False,
+                    use_doc_unwarping=False, use_textline_orientation=False,
+                )
+            except TypeError:
+                self._paddle = PaddleOCR(lang=self.paddle_lang, use_angle_cls=True)
+            self._paddle_error = ""
+            return self._paddle
+        except Exception as exc:
+            self._paddle_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("PaddleOCR initialization failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _extract_lines(value) -> tuple[list[str], list[float]]:
+        texts: list[str] = []
+        scores: list[float] = []
+        visited: set[int] = set()
+
+        def add(text, score=None):
+            clean = _clean_value(text)
+            if clean and clean not in texts:
+                texts.append(clean)
+                try:
+                    scores.append(float(score))
+                except (TypeError, ValueError):
+                    pass
+
+        def walk(item):
+            if item is None or isinstance(item, (str, bytes, int, float, bool)):
+                return
+            item_id = id(item)
+            if item_id in visited:
+                return
+            visited.add(item_id)
+            if hasattr(item, "json"):
+                exported = item.json() if callable(item.json) else item.json
+                if isinstance(exported, str):
+                    try:
+                        exported = json.loads(exported)
+                    except json.JSONDecodeError:
+                        exported = None
+                if exported is not None:
+                    walk(exported)
+            if isinstance(item, dict):
+                rec_texts = item.get("rec_texts")
+                rec_scores = item.get("rec_scores") or []
+                if isinstance(rec_texts, list):
+                    for index, text in enumerate(rec_texts):
+                        add(text, rec_scores[index] if index < len(rec_scores) else None)
+                for key in ("res", "result", "data"):
+                    if key in item:
+                        walk(item[key])
+                return
+            if isinstance(item, (list, tuple)):
+                if len(item) >= 2 and isinstance(item[0], str) and isinstance(item[1], (int, float)):
+                    add(item[0], item[1])
+                    return
+                if len(item) >= 2 and isinstance(item[1], (list, tuple)) and item[1] and isinstance(item[1][0], str):
+                    add(item[1][0], item[1][1] if len(item[1]) > 1 else None)
+                    return
+                for child in item:
+                    walk(child)
+
+        walk(value)
+        return texts, scores
+
+    def _paddle_recognize(self, image_bytes: bytes, filename: str) -> tuple[str, float | None]:
+        paddle = self._load_paddle()
+        if paddle is None:
+            return "", None
+        suffix = Path(filename or "image.jpg").suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}:
+            suffix = ".jpg"
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="mai-ocr-", suffix=suffix, delete=False) as temp_file:
+                temp_file.write(image_bytes)
+                temp_path = Path(temp_file.name)
+            result = list(paddle.predict(str(temp_path))) if hasattr(paddle, "predict") else paddle.ocr(str(temp_path), cls=True)
+            texts, scores = self._extract_lines(result)
+            confidence = round(sum(scores) / len(scores), 4) if scores else None
+            return "\n".join(texts), confidence
+        except Exception as exc:
+            self._paddle_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("PaddleOCR inference failed: %s", exc)
+            return "", None
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+
+    def _qwen_vl_recognize(self, image_bytes: bytes, mime_type: str) -> str:
+        if not self.qwen_key:
+            return ""
+        data_uri = f"data:{mime_type or 'image/jpeg'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+        prompt = (
+            "识别这张工业物料或铭牌图片中的全部可见文字。只输出原始文字，逐行分隔；"
+            "不要推测图片中未出现的品牌、型号、压力、口径或材质。"
+        )
+        try:
+            response = requests.post(
+                self.QWEN_VL_URL,
+                headers={"Authorization": f"Bearer {self.qwen_key}", "Content-Type": "application/json"},
+                json={"model": self.qwen_model, "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                    {"type": "text", "text": prompt},
+                ]}], "temperature": 0}, timeout=(3.05, 30),
+            )
+            if response.status_code != 200:
+                logger.warning("Qwen-VL OCR returned HTTP %s", response.status_code)
+                return ""
+            content = response.json()["choices"][0]["message"]["content"]
+            if isinstance(content, list):
+                content = "\n".join(_clean_value(item.get("text")) for item in content if isinstance(item, dict))
+            return _clean_value(content)
+        except (requests.RequestException, requests.Timeout, KeyError, TypeError, ValueError) as exc:
+            logger.warning("Qwen-VL OCR unavailable: %s", exc)
+            return ""
+
+    def recognize(self, image_bytes: bytes, filename: str, mime_type: str, hint_text: str = "") -> dict:
+        warnings = []
+        raw_text, confidence = self._paddle_recognize(image_bytes, filename)
+        provider = "paddleocr-local"
+        if not raw_text:
+            if self.paddle_enabled and self._paddle_error:
+                warnings.append(f"PaddleOCR不可用：{self._paddle_error}")
+            elif self.paddle_enabled and importlib.util.find_spec("paddleocr") is None:
+                warnings.append("PaddleOCR未安装")
+            raw_text = self._qwen_vl_recognize(image_bytes, mime_type)
+            provider = "qwen-vl"
+        if not raw_text:
+            provider = "rule-fallback"
+            raw_text = _clean_value(hint_text or filename)
+            confidence = 0.5 if raw_text else 0.0
+            warnings.append("真实OCR引擎不可用，已使用文件提示文字进行规则解析")
+        return {
+            "provider": provider, "raw_text": raw_text, "ocr_confidence": confidence,
+            "real_ocr": provider in {"paddleocr-local", "qwen-vl"},
+            "warning": "；".join(warnings) or None,
+        }
 
 
 class SemanticDemoGovernor:
@@ -1410,6 +1625,51 @@ class SemanticDemoGovernor:
 
 semantic_engine = SemanticEngine()
 semantic_governor = SemanticDemoGovernor(semantic_engine, engine)
+ocr_engine = OCREngine()
+
+
+def _seed_standard_kb(conn: sqlite3.Connection) -> dict:
+    """Build an independent, always-available standard knowledge vector namespace."""
+    conn.execute("DELETE FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL")
+    now = _utc_now()
+    for item in STANDARD_KB:
+        content = f"{item['category']} {item['title']} {item['keywords']} {item['code_prefix']}"
+        vector = np.asarray(semantic_engine.local_embedding(content), dtype=np.float32)
+        metadata = {**item, "source": "SY/T 5497-2018 适配分类知识库", "standard_version": "2018"}
+        conn.execute(
+            """INSERT INTO vector_embeddings
+               (namespace, entity_type, entity_id, batch_id, plant_code, content, content_hash,
+                vector, dimension, provider, model, metadata, created_at, updated_at)
+               VALUES ('standard_kb', 'STANDARD_CATEGORY', ?, NULL, 'GROUP', ?, ?, ?, ?, 'local',
+                       'feature-hash-v1', ?, ?, ?)""",
+            (item["reference_id"], content, hashlib.sha256(content.encode("utf-8")).hexdigest(),
+             vector.tobytes(), len(vector), json.dumps(metadata, ensure_ascii=False), now, now),
+        )
+    return {"namespace": "standard_kb", "indexed": len(STANDARD_KB), "provider": "local",
+            "model": "feature-hash-v1", "dimension": 384}
+
+
+def _search_standard_kb(conn: sqlite3.Connection, query: str, top_k: int = 3) -> list[dict]:
+    rows = conn.execute(
+        """SELECT * FROM vector_embeddings WHERE namespace = 'standard_kb'
+           AND batch_id IS NULL AND provider = 'local' AND model = 'feature-hash-v1'"""
+    ).fetchall()
+    if not rows:
+        _seed_standard_kb(conn)
+        rows = conn.execute(
+            "SELECT * FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
+        ).fetchall()
+    query_vector = semantic_engine.local_embedding(engine.standardize_text(query))
+    results = []
+    for row in rows:
+        vector = np.frombuffer(row["vector"], dtype=np.float32).tolist()
+        metadata = json.loads(row["metadata"] or "{}")
+        results.append({
+            "reference_id": row["entity_id"], "score": round(semantic_engine.cosine_similarity(query_vector, vector), 6),
+            "content": row["content"], **metadata,
+        })
+    results.sort(key=lambda item: item["score"], reverse=True)
+    return results[:max(1, min(10, int(top_k)))]
 
 
 WORKFLOW_DEFINITION = [
@@ -1523,7 +1783,7 @@ def _verify_audit_chain(conn: sqlite3.Connection, batch_id: str) -> dict:
     return {
         "batch_id": batch_id, "valid": not errors, "block_count": len(blocks),
         "latest_hash": expected_previous if blocks else None, "errors": errors,
-        "chain_type": "本地联盟链式审计账本", "public_chain": False,
+        "chain_type": "防篡改SHA-256链式审计账本", "public_chain": False,
     }
 
 
@@ -1639,6 +1899,7 @@ class QwenGovernanceAgent:
     def __init__(self):
         self.api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
         self.model = os.getenv("QWEN_CHAT_MODEL", "qwen-plus").strip() or "qwen-plus"
+        self._explanation_cache: dict[str, str] = {}
 
     @staticmethod
     def fallback_plan(task: str, context: dict) -> dict:
@@ -1684,6 +1945,72 @@ class QwenGovernanceAgent:
             logger.warning("Qwen agent unavailable: %s", exc)
             return fallback, {"active": False, "model": self.model, "method": "确定性Agent编排（降级）",
                               "warning": f"通义千问调用失败，已自动降级：{exc}"}
+
+    @staticmethod
+    def fallback_explanation(evidence: dict) -> str:
+        master = evidence["master"]
+        attributes = evidence["attributes"]
+        source_count = int(master.get("source_count") or 0)
+        parts = [
+            f"系统将 {source_count} 条来源记录归入黄金编码 {master['mdm_code']}。",
+            f"治理决策为{evidence['decision_label']}，置信度 {float(master.get('confidence') or 0):.2f}。",
+        ]
+        matched = [f"{label}一致" for key, label in (("brand", "品牌"), ("model", "型号"), ("dn", "口径"), ("pressure", "压力")) if attributes.get(key)]
+        if matched:
+            parts.append("主要依据：" + "、".join(matched) + "。")
+        if evidence["conflicts"]:
+            conflict_text = "；".join(f"{item['field']}存在冲突（{' / '.join(item['values'])}）" for item in evidence["conflicts"])
+            parts.append(f"风险提示：{conflict_text}，因此需要人工复核。")
+        elif source_count > 1:
+            parts.append("关键属性未发现硬冲突，可按当前规则建议归并。")
+        else:
+            parts.append("未检索到可安全归并的同物记录，建议作为新增候选。")
+        return "".join(parts)
+
+    def explain(self, evidence: dict, use_llm: bool = True) -> tuple[str, dict]:
+        fallback = self.fallback_explanation(evidence)
+        evidence_hash = hashlib.sha256(_canonical_json(evidence).encode("utf-8")).hexdigest()
+        if not use_llm or not self.api_key:
+            return fallback, {
+                "active": False, "model": self.model, "method": "事实模板解释（降级）",
+                "warning": None if not use_llm else "DASHSCOPE_API_KEY未配置，已使用事实模板。",
+                "cached": False, "evidence_hash": evidence_hash,
+            }
+        if evidence_hash in self._explanation_cache:
+            return self._explanation_cache[evidence_hash], {
+                "active": True, "model": self.model, "method": "通义千问事实约束解释",
+                "warning": None, "cached": True, "evidence_hash": evidence_hash,
+            }
+        system_prompt = (
+            "你是制造集团主数据治理解释Agent。仅依据输入JSON中的事实，用不超过180字的中文说明归并或新增原因、"
+            "关键一致项、冲突项和是否需要人工审核。不得编造相似度、字段或标准条款，不得改变系统决策。"
+        )
+        try:
+            response = requests.post(
+                self.API_URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={"model": self.model, "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": _canonical_json(evidence)},
+                ], "temperature": 0.1}, timeout=(3.05, 20),
+            )
+            if response.status_code != 200:
+                raise requests.RequestException(f"HTTP {response.status_code}")
+            content = _clean_value(response.json()["choices"][0]["message"]["content"])
+            if not content:
+                raise ValueError("empty explanation")
+            self._explanation_cache[evidence_hash] = content
+            return content, {
+                "active": True, "model": self.model, "method": "通义千问事实约束解释",
+                "warning": None, "cached": False, "evidence_hash": evidence_hash,
+            }
+        except (requests.RequestException, requests.Timeout, KeyError, ValueError, TypeError) as exc:
+            logger.warning("Qwen explanation unavailable: %s", exc)
+            return fallback, {
+                "active": False, "model": self.model, "method": "事实模板解释（降级）",
+                "warning": f"通义千问解释调用失败，已自动降级：{exc}",
+                "cached": False, "evidence_hash": evidence_hash,
+            }
 
 
 qwen_agent = QwenGovernanceAgent()
@@ -1736,9 +2063,12 @@ def _build_governance_graph(
     return graph, stats
 
 
-def analyze_quality(records: list[dict], anomaly_count: int = 0) -> dict:
+def _quality_metrics(records: list[dict], anomaly_count: int = 0) -> dict:
     if not records:
-        return {"overall": {"score": 0, "recordCount": 0}, "systems": {}, "issues": [], "suggestions": []}
+        return {
+            "completeness": 0, "accuracy": 0, "consistency": 0,
+            "uniqueness": 0, "standardization": 0, "score": 0, "recordCount": 0,
+        }
     fields = ("material_code", "system_source", "material_name", "description", "category", "unit")
     completeness = sum(bool(record.get(field)) for record in records for field in fields) / (len(records) * len(fields)) * 100
     code_values = [record.get("material_code", "") for record in records if record.get("material_code")]
@@ -1753,15 +2083,23 @@ def analyze_quality(records: list[dict], anomaly_count: int = 0) -> dict:
     }
     metrics["score"] = round(sum(metrics.values()) / len(metrics), 1)
     metrics["recordCount"] = len(records)
+    return metrics
+
+
+def analyze_quality(records: list[dict], anomaly_count: int = 0) -> dict:
+    if not records:
+        return {"overall": _quality_metrics([]), "systems": {}, "issues": [], "suggestions": []}
+    metrics = _quality_metrics(records, anomaly_count)
+    completeness = metrics["completeness"]
     systems = {}
     for system in sorted({record.get("system_source") or "未分类" for record in records}):
         subset = [record for record in records if (record.get("system_source") or "未分类") == system]
-        systems[system] = {"recordCount": len(subset), "score": metrics["score"]}
+        systems[system] = _quality_metrics(subset)
     issues = []
     if completeness < 90:
-        issues.append({"level": "high", "text": f"关键字段完整率为 {completeness:.1f}%", "action": "补齐物料编码、名称、描述、分类和计量单位。"})
+        issues.append({"level": "high", "system": "全部系统", "text": f"关键字段完整率为 {completeness:.1f}%", "action": "补齐物料编码、名称、描述、分类和计量单位。"})
     if anomaly_count:
-        issues.append({"level": "mid", "text": f"Isolation Forest 识别 {anomaly_count} 条结构异常记录", "action": "在人工审核中复核异常记录。"})
+        issues.append({"level": "mid", "system": "全部系统", "text": f"Isolation Forest 识别 {anomaly_count} 条结构异常记录", "action": "在人工审核中复核异常记录。"})
     return {"overall": metrics, "systems": systems, "issues": issues, "suggestions": list(dict.fromkeys(item["action"] for item in issues))}
 
 
@@ -1919,7 +2257,8 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
         batch_row = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
         if not batch_row:
             raise LookupError("batch not found")
-        records = _rows(conn, "SELECT * FROM records WHERE batch_id = ? ORDER BY id", (batch_id,))
+        all_records = _rows(conn, "SELECT * FROM records WHERE batch_id = ? ORDER BY id", (batch_id,))
+        records = list(all_records)
         if requested_plant and requested_plant != "GROUP":
             records = [item for item in records if _plant_visible(item.get("plant_code"), requested_plant)]
         for record in records:
@@ -1935,7 +2274,7 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
                 placeholders = ",".join("?" for _ in codes)
                 masters = _rows(conn, f"SELECT * FROM masters WHERE mdm_code IN ({placeholders}) ORDER BY id", codes)
         if requested_plant and requested_plant != "GROUP":
-            masters = [item for item in masters if _plant_visible(item.get("plant_codes"), requested_plant)]
+            masters = [item for item in masters if _master_distributable_to_plant(item.get("plant_codes"), requested_plant)]
         for master in masters:
             master["_ext"] = {key: master.get(key) or "" for key in ("model", "brand", "dn", "pressure", "material")}
             if not master.get("source_records"):
@@ -1948,6 +2287,14 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
             review["candidates"] = json.loads(review.get("candidates") or "[]")
         quality_row = conn.execute("SELECT report FROM quality_reports WHERE batch_id = ?", (batch_id,)).fetchone()
         quality = json.loads(quality_row["report"]) if quality_row else None
+        if quality and any(
+            "completeness" not in item for item in quality.get("systems", {}).values()
+        ):
+            quality = analyze_quality(all_records)
+            conn.execute(
+                "UPDATE quality_reports SET report = ?, generated_at = ? WHERE batch_id = ?",
+                (json.dumps(quality, ensure_ascii=False), _utc_now(), batch_id),
+            )
         lifecycle = _rows(conn, "SELECT * FROM lifecycle WHERE batch_id = ? ORDER BY id DESC", (batch_id,))
         if requested_plant and requested_plant != "GROUP":
             lifecycle = [item for item in lifecycle if _plant_visible(item.get("plant_code"), requested_plant)]
@@ -2013,9 +2360,13 @@ def index():
 @app.get("/api/health")
 def health_check():
     database_error = ""
+    standard_kb_count = 0
     try:
         with db_connect() as conn:
             conn.execute("SELECT 1").fetchone()
+            standard_kb_count = conn.execute(
+                "SELECT COUNT(*) FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
+            ).fetchone()[0]
         database_ready = True
     except Exception as exc:
         database_ready = False
@@ -2034,7 +2385,10 @@ def health_check():
         "plants": PLANTS,
         "capabilities": {
             "llm_agent": bool(qwen_agent.api_key), "vector_store": True, "knowledge_graph": True,
-            "audit_blockchain": True, "closed_loop_workflow": True,
+            "audit_blockchain": False, "tamper_evident_audit_chain": True,
+            "closed_loop_workflow": True, "real_ocr": ocr_engine.status(),
+            "ground_truth_evaluation": GROUND_TRUTH_PATH.exists(), "explainable_governance": True,
+            "standard_rag": {"namespace": "standard_kb", "count": standard_kb_count},
         },
         "trace_id": g.trace_id,
     }
@@ -2207,6 +2561,9 @@ def api_classify():
         return jsonify({"error": f"unsupported model: {model}", "supported_models": list(SemanticEngine.MODELS)}), 400
     source_text = f"{name} {description}".strip()
     enriched = engine.enrich({"material_name": name, "description": description, "category": payload.get("category", "")})
+    with db_connect() as conn:
+        standard_references = _search_standard_kb(conn, source_text, 3)
+    rag_scores = {item["category"]: item["score"] for item in standard_references}
     categories = [category for category, _pattern in engine.CATEGORY_PATTERNS]
     category_texts = [
         engine.standardize_text(f"{category} {' '.join(engine.SYNONYMS.get(category, []))}") for category in categories
@@ -2221,10 +2578,16 @@ def api_classify():
             if vectors is not None else semantic_engine.jaccard_similarity(query_text, category_texts[index])
         )
         rule_bonus = 0.78 if category == rule_category else 0.0
+        rag_score = rag_scores.get(category, 0.0)
         candidates.append({
-            "category": category, "score": round(min(0.99, semantic_score * 0.21 + rule_bonus), 4),
+            "category": category, "score": round(min(0.99, max(
+                semantic_score * 0.21 + rule_bonus, rag_score * 0.32 + (0.65 if category == rule_category else 0.0)
+            )), 4),
             "code_prefix": engine.CATEGORY_PREFIX.get(category, "MDM-X"),
-            "reason": "标准规则命中 + AI语义匹配" if rule_bonus else "AI语义候选",
+            "rag_score": round(rag_score, 4),
+            "reason": "标准规则命中 + 标准知识库RAG + AI语义匹配" if rule_bonus else (
+                "标准知识库RAG候选" if rag_score else "AI语义候选"
+            ),
         })
     candidates.sort(key=lambda item: item["score"], reverse=True)
     recommended = candidates[0]
@@ -2234,7 +2597,9 @@ def api_classify():
         "standard": "SY/T5497-2018", "recommended_category": recommended["category"],
         "confidence": recommended["score"], "code_prefix": recommended["code_prefix"],
         "attributes": public_attributes, "standard_name_preview": preview,
-        "candidates": candidates[:3], "semantic": metadata,
+        "candidates": candidates[:3], "semantic": metadata, "standard_references": standard_references,
+        "rag": {"namespace": "standard_kb", "retrieval_count": len(standard_references),
+                "method": "离线Embedding检索增强"},
         "plant_code": _normalize_plant_code(payload.get("plant_code")),
     })
 
@@ -2242,7 +2607,7 @@ def api_classify():
 @app.get("/api/agent/capabilities")
 def agent_capabilities():
     return jsonify({
-        "agent": "M-AI Master", "version": "4.0",
+        "agent": "M-AI Master", "version": APP_VERSION,
         "workflow": [
             {"step": ordinal, "code": code, "name": name, "endpoint": endpoint}
             for code, ordinal, name, endpoint in WORKFLOW_DEFINITION
@@ -2278,6 +2643,72 @@ def agent_plan():
     return jsonify({"plan": plan, "runtime": runtime, "trace_id": g.trace_id})
 
 
+@app.post("/api/demo/run")
+def run_competition_demo():
+    """Create a new deterministic batch and execute the full factory feedback loop."""
+    demo_records = normalize_records([
+        {"material_code": "DEMO-SAP-001", "system_source": "SAP", "material_name": "SKF 6312深沟球轴承", "description": "SKF 6312 C3 bearing", "category": "轴承", "unit": "个", "plant_code": "GROUP"},
+        {"material_code": "DEMO-EAM-001", "system_source": "EAM", "material_name": "SKF 6312滚动轴承", "description": "Bearing SKF 6312 C3", "category": "轴承", "unit": "个", "plant_code": "GROUP"},
+        {"material_code": "DEMO-SAP-002", "system_source": "SAP", "material_name": "Z41H-16C DN150闸阀", "description": "铸钢 PN16 法兰连接", "category": "阀门", "unit": "台", "plant_code": "GROUP"},
+        {"material_code": "DEMO-EAM-002", "system_source": "EAM", "material_name": "DN150 Gate Valve Z41H-16C", "description": "carbon steel PN16", "category": "阀门", "unit": "台", "plant_code": "GROUP"},
+    ])
+    state = persist_batch(f"competition-demo-{datetime.now().strftime('%H%M%S')}.json", "utf-8", demo_records, "qwen")
+    batch_id = state["batch"]["batch_id"]
+    now = _utc_now()
+    with db_connect() as conn:
+        pending = conn.execute("SELECT id, mdm_code FROM reviews WHERE batch_id = ? AND status = 'REVIEW'", (batch_id,)).fetchall()
+        for review in pending:
+            conn.execute("UPDATE reviews SET status = 'APPROVED', approved_action = 'MERGE', approved_at = ? WHERE id = ?", (now, review["id"]))
+            conn.execute("UPDATE batch_masters SET decision = 'AUTO_MERGE' WHERE batch_id = ? AND mdm_code = ?", (batch_id, review["mdm_code"]))
+        _set_workflow_step(conn, batch_id, "REVIEW", "COMPLETED", 100, {"pending": 0, "demo_approved": len(pending)})
+        masters = conn.execute(
+            "SELECT mdm_code, standard_name FROM batch_masters WHERE batch_id = ? ORDER BY rowid", (batch_id,)
+        ).fetchall()
+        distribution_count = 0
+        for plant_code in ("SHANGHAI", "BEIJING"):
+            for target in ("SAP", "EAM"):
+                for master in masters:
+                    conn.execute(
+                        """INSERT INTO distribution_logs
+                           (batch_id, target_system, mdm_code, standard_name, sync_mode, sync_frequency,
+                            status, message, plant_code, instruction)
+                           VALUES (?, ?, ?, ?, 'FULL', 'MANUAL', 'SUCCESS', ?, ?, ?)""",
+                        (batch_id, target, master["mdm_code"], master["standard_name"],
+                         "比赛演示适配器已生成接口载荷", plant_code, f"同步到{PLANTS[plant_code]}{target}"),
+                    )
+                    distribution_count += 1
+        _set_workflow_step(conn, batch_id, "DISTRIBUTE", "COMPLETED", 100, {
+            "success_count": distribution_count, "failed_count": 0, "plants": ["SHANGHAI", "BEIJING"],
+        })
+        feedback_count = 0
+        for index, plant_code in enumerate(("SHANGHAI", "BEIJING")):
+            master = masters[index % len(masters)]
+            conn.execute(
+                """INSERT INTO plant_feedback
+                   (batch_id, plant_code, mdm_code, accepted, rating, comment, actor, created_at)
+                   VALUES (?, ?, ?, 1, 5, ?, ?, ?)""",
+                (batch_id, plant_code, master["mdm_code"], "现场型号与黄金主数据一致，确认复用",
+                 f"{PLANTS[plant_code]}数据管理员", now),
+            )
+            feedback_count += 1
+        vector_meta = _index_batch_vectors(conn, batch_id, "local")
+        _set_workflow_step(conn, batch_id, "FEEDBACK", "COMPLETED", 100, {
+            "feedback_count": feedback_count, "accepted": feedback_count, "vector_refresh": vector_meta,
+        })
+        _append_audit_block(conn, batch_id, "DEMO_MULTI_PLANT_DISTRIBUTED", "DISTRIBUTION", batch_id, {
+            "plants": ["SHANGHAI", "BEIJING"], "tasks": distribution_count, "success": distribution_count,
+        }, actor="比赛演示Agent")
+        _append_audit_block(conn, batch_id, "DEMO_FACTORY_FEEDBACK", "FEEDBACK", batch_id, {
+            "feedback_count": feedback_count, "accepted": feedback_count, "vector_refresh": vector_meta,
+        }, actor="多工厂协同Agent")
+    result = get_batch_state(batch_id)
+    result["demo_execution"] = {
+        "deterministic": True, "distribution_tasks": distribution_count,
+        "factory_feedback": feedback_count, "closed_loop": result["workflow"]["closed_loop"],
+    }
+    return jsonify(result), 201
+
+
 @app.get("/api/workflow/latest")
 def latest_workflow():
     with db_connect() as conn:
@@ -2294,6 +2725,32 @@ def batch_workflow(batch_id: str):
         if not conn.execute("SELECT 1 FROM batches WHERE batch_id = ?", (batch_id,)).fetchone():
             return jsonify({"error": "batch not found"}), 404
         return jsonify(_workflow_payload(conn, batch_id))
+
+
+@app.get("/api/standards/stats")
+def standard_kb_stats():
+    with db_connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
+        ).fetchone()[0]
+        return jsonify({"namespace": "standard_kb", "count": count, "provider": "local",
+                        "model": "feature-hash-v1", "dimension": 384, "standard_version": "2018"})
+
+
+@app.post("/api/standards/search")
+def search_standard_kb():
+    payload = request.get_json(silent=True) or {}
+    query = _clean_value(payload.get("query") or payload.get("text"))
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    try:
+        top_k = int(payload.get("top_k", 3))
+    except (TypeError, ValueError):
+        return jsonify({"error": "top_k must be an integer"}), 400
+    with db_connect() as conn:
+        results = _search_standard_kb(conn, query, top_k)
+    return jsonify({"query": query, "namespace": "standard_kb", "results": results,
+                    "citation_required": True, "trace_id": g.trace_id})
 
 
 @app.get("/api/vectors/stats")
@@ -2412,25 +2869,227 @@ def api_ocr():
     encoded_image = (payload or {}).get("image")
     if uploaded is None and not encoded_image:
         return jsonify({"error": "image is required"}), 400
-    filename = uploaded.filename if uploaded is not None else "base64-image"
+    filename = uploaded.filename if uploaded is not None else "base64-image.jpg"
+    try:
+        if uploaded is not None:
+            image_bytes = uploaded.read()
+            mime_type = uploaded.mimetype or "image/jpeg"
+        else:
+            image_bytes, mime_type = ocr_engine.decode_data_image(encoded_image)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    max_ocr_bytes = int(os.getenv("MDM_MAX_OCR_BYTES", str(10 * 1024 * 1024)))
+    if not image_bytes:
+        return jsonify({"error": "image is empty"}), 400
+    if len(image_bytes) > max_ocr_bytes:
+        return jsonify({"error": f"image exceeds {max_ocr_bytes} byte OCR limit"}), 413
     hint = _clean_value(payload.get("hint_text") or payload.get("description") or filename)
-    extracted = engine.enrich({"material_name": hint, "description": hint, "category": payload.get("category", "")})
-    defaults = {"brand": "SKF", "model": "6312-2RS1", "pressure": "1.6MPa", "material": "316L", "dn": ""}
-    fields = {key: extracted["_ext"].get(key) or value for key, value in defaults.items()}
+    recognition = ocr_engine.recognize(image_bytes, filename, mime_type, hint)
+    source_text = recognition["raw_text"] or hint
+    extracted = engine.enrich({"material_name": source_text, "description": source_text, "category": payload.get("category", "")})
+    fields = {key: extracted["_ext"].get(key) or "" for key in ("brand", "model", "pressure", "material", "dn")}
     standard_name = engine.generate_standard_name([{**extracted, "_ext": fields}], extracted["_category"])
     return jsonify({
         "success": True,
-        "simulated": True,
-        "provider": "mock-ocr-with-rule-validation",
+        "simulated": not recognition["real_ocr"],
+        "real_ocr": recognition["real_ocr"],
+        "provider": recognition["provider"],
         "extraction_id": f"OCR-{uuid.uuid4().hex[:10].upper()}",
         "filename": filename,
+        "raw_text": recognition["raw_text"],
         "fields": fields,
         **fields,
         "category": extracted["_category"],
         "standard_name_preview": standard_name,
-        "confidence": 0.96,
+        "confidence": recognition["ocr_confidence"],
         "plant_code": _normalize_plant_code(payload.get("plant_code")),
-        "warning": "当前为可替换的OCR模拟适配器，字段已通过主数据规则引擎标准化。",
+        "warning": recognition["warning"],
+        "engine_status": ocr_engine.status(),
+    })
+
+
+def _load_ground_truth() -> tuple[list[dict], list[dict], str]:
+    if not GROUND_TRUTH_PATH.exists() or not GROUND_TRUTH_SOURCE.exists():
+        raise FileNotFoundError("50条真值集或来源数据文件不存在")
+    truth_frame = pd.read_csv(GROUND_TRUTH_PATH, encoding="utf-8-sig", dtype=str).fillna("")
+    required = {"record_id", "truth_group"}
+    if not required.issubset(truth_frame.columns):
+        raise ValueError("ground truth requires record_id and truth_group columns")
+    source_raw = GROUND_TRUTH_SOURCE.read_bytes()
+    source_encoding = (chardet.detect(source_raw).get("encoding") or "utf-8").lower()
+    source_frame = pd.read_csv(io.BytesIO(source_raw), encoding=source_encoding, dtype=str).fillna("")
+    mapping = map_fields(source_frame.columns.tolist())
+    code_column = mapping.get("material_code")
+    if not code_column:
+        raise ValueError("ground truth source has no recognizable material code column")
+    source_rows = {str(row[code_column]).strip(): row.to_dict() for _, row in source_frame.iterrows()}
+    labels = [{"record_id": _clean_value(row["record_id"]), "truth_group": _clean_value(row["truth_group"])}
+              for _, row in truth_frame.iterrows()]
+    missing = [item["record_id"] for item in labels if item["record_id"] not in source_rows]
+    if missing:
+        raise ValueError(f"ground truth records missing from source: {', '.join(missing[:5])}")
+    records = normalize_records([source_rows[item["record_id"]] for item in labels], explicit_mapping=mapping)
+    dataset_hash = hashlib.sha256(GROUND_TRUTH_PATH.read_bytes() + source_raw).hexdigest()
+    return records, labels, dataset_hash
+
+
+def _cluster_metrics(labels: list[dict], predicted: dict[str, str]) -> dict:
+    truth = {item["record_id"]: item["truth_group"] for item in labels if item.get("record_id") and item.get("truth_group")}
+    ids = [record_id for record_id in truth if record_id in predicted]
+    tp = fp = fn = 0
+    false_positives, false_negatives = [], []
+    for left_index, left in enumerate(ids):
+        for right in ids[left_index + 1:]:
+            truth_same = truth[left] == truth[right]
+            predicted_same = predicted[left] == predicted[right]
+            if truth_same and predicted_same:
+                tp += 1
+            elif predicted_same:
+                fp += 1
+                if len(false_positives) < 10:
+                    false_positives.append([left, right])
+            elif truth_same:
+                fn += 1
+                if len(false_negatives) < 10:
+                    false_negatives.append([left, right])
+    precision = tp / (tp + fp) if tp + fp else 1.0
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    truth_clusters: dict[str, set[str]] = {}
+    predicted_clusters: dict[str, set[str]] = {}
+    for record_id in ids:
+        truth_clusters.setdefault(truth[record_id], set()).add(record_id)
+        predicted_clusters.setdefault(predicted[record_id], set()).add(record_id)
+    b3_precision = b3_recall = 0.0
+    for record_id in ids:
+        intersection = truth_clusters[truth[record_id]] & predicted_clusters[predicted[record_id]]
+        b3_precision += len(intersection) / len(predicted_clusters[predicted[record_id]])
+        b3_recall += len(intersection) / len(truth_clusters[truth[record_id]])
+    if ids:
+        b3_precision /= len(ids)
+        b3_recall /= len(ids)
+    b3_f1 = 2 * b3_precision * b3_recall / (b3_precision + b3_recall) if b3_precision + b3_recall else 0.0
+    return {
+        "coverage": round(len(ids) / len(truth), 6) if truth else 0.0,
+        "labeled_records": len(truth), "evaluated_records": len(ids),
+        "truth_groups": len(set(truth.values())), "predicted_groups": len({predicted[item] for item in ids}),
+        "pairwise": {
+            "precision": round(precision, 6), "recall": round(recall, 6), "f1": round(f1, 6),
+            "true_positive_pairs": tp, "false_positive_pairs": fp, "false_negative_pairs": fn,
+        },
+        "b3": {"precision": round(b3_precision, 6), "recall": round(b3_recall, 6), "f1": round(b3_f1, 6)},
+        "error_examples": {"false_positive_pairs": false_positives, "false_negative_pairs": false_negatives},
+    }
+
+
+@app.get("/api/evaluation/ground-truth")
+def ground_truth_metadata():
+    try:
+        _records, labels, dataset_hash = _load_ground_truth()
+    except (FileNotFoundError, ValueError, UnicodeError, pd.errors.ParserError) as exc:
+        return jsonify({"available": False, "error": str(exc), "trace_id": g.trace_id}), 503
+    return jsonify({
+        "available": True, "name": "50条物料归并人工真值集", "record_count": len(labels),
+        "group_count": len({item["truth_group"] for item in labels}), "dataset_hash": dataset_hash,
+        "methodology": ["独立人工分组标签", "Pairwise Precision/Recall/F1", "B³聚类Precision/Recall/F1"],
+        "trace_id": g.trace_id,
+    })
+
+
+@app.post("/api/evaluation/run")
+def run_ground_truth_evaluation():
+    payload = request.get_json(silent=True) or {}
+    model = _clean_value(payload.get("model")) or "local"
+    if model not in {*SemanticEngine.MODELS, "local"}:
+        return jsonify({"error": "unsupported evaluation model", "supported_models": [*SemanticEngine.MODELS, "local"]}), 400
+    try:
+        primary_threshold = float(payload.get("threshold", engine.SIMILARITY_THRESHOLD))
+        raw_thresholds = payload.get("thresholds") or [0.45, 0.50, primary_threshold, 0.60, 0.65]
+        thresholds = sorted({round(float(value), 4) for value in raw_thresholds})
+        if not thresholds or len(thresholds) > 12 or any(not 0.0 <= value <= 1.0 for value in thresholds):
+            raise ValueError("thresholds must contain 1 to 12 values between 0 and 1")
+        records, labels, dataset_hash = _load_ground_truth()
+    except (FileNotFoundError, ValueError, TypeError, UnicodeError, pd.errors.ParserError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    semantic = semantic_engine if model != "local" else None
+    sweep = []
+    primary_result = None
+    for threshold in thresholds:
+        _masters, _reviews, mappings, semantic_meta = engine.govern(
+            records, semantic, "qwen" if model == "local" else model, similarity_threshold=threshold,
+        )
+        predicted = {item["original_code"]: item["mdm_code"] for item in mappings}
+        metrics = _cluster_metrics(labels, predicted)
+        result = {"threshold": threshold, **metrics}
+        sweep.append(result)
+        if abs(threshold - primary_threshold) < 1e-9:
+            primary_result = result
+    if primary_result is None:
+        _masters, _reviews, mappings, semantic_meta = engine.govern(
+            records, semantic, "qwen" if model == "local" else model, similarity_threshold=primary_threshold,
+        )
+        primary_result = {"threshold": primary_threshold, **_cluster_metrics(
+            labels, {item["original_code"]: item["mdm_code"] for item in mappings}
+        )}
+        sweep.append(primary_result)
+        sweep.sort(key=lambda item: item["threshold"])
+    return jsonify({
+        "dataset": {"name": "50条物料归并人工真值集", "hash": dataset_hash, "record_count": len(labels)},
+        "model": model, "semantic": semantic_meta, "result": primary_result, "threshold_sweep": sweep,
+        "best_pairwise_f1": max(sweep, key=lambda item: item["pairwise"]["f1"])["threshold"],
+        "warning": "该结果仅代表当前真值集；新增数据域需重新抽样标注，不能外推为全域准确率。",
+        "trace_id": g.trace_id,
+    })
+
+
+@app.post("/api/explain")
+def explain_governance_decision():
+    payload = request.get_json(silent=True) or {}
+    mdm_code = _clean_value(payload.get("mdm_code"))
+    if not mdm_code:
+        return jsonify({"error": "mdm_code is required"}), 400
+    with db_connect() as conn:
+        batch_id = _clean_value(payload.get("batch_id")) or _latest_batch_id(conn)
+        if not batch_id:
+            return jsonify({"error": "no governed batch is available"}), 400
+        master_row = conn.execute(
+            "SELECT * FROM batch_masters WHERE batch_id = ? AND mdm_code = ?", (batch_id, mdm_code)
+        ).fetchone()
+        if not master_row:
+            return jsonify({"error": "master not found in batch"}), 404
+        master = dict(master_row)
+        mapping_rows = _rows(conn, "SELECT * FROM mappings WHERE batch_id = ? AND mdm_code = ? ORDER BY id", (batch_id, mdm_code))
+        records = []
+        for mapping in mapping_rows:
+            record = conn.execute(
+                "SELECT * FROM records WHERE batch_id = ? AND material_code = ? ORDER BY id LIMIT 1",
+                (batch_id, mapping["original_code"]),
+            ).fetchone()
+            if record:
+                records.append(engine.enrich(dict(record)))
+        conflicts = engine.detect_conflicts(records) if records else []
+        review = conn.execute(
+            "SELECT reason, applied_rules, status FROM reviews WHERE batch_id = ? AND mdm_code = ? ORDER BY id DESC LIMIT 1",
+            (batch_id, mdm_code),
+        ).fetchone()
+    decision_labels = {"AUTO_MERGE": "自动归并", "REVIEW": "人工复核", "NEW": "建议新建", "CONFIRMED_NEW": "审核后新建"}
+    evidence = {
+        "batch_id": batch_id,
+        "master": {key: master.get(key) for key in ("mdm_code", "standard_name", "category", "source_count", "source_systems", "decision", "confidence", "plant_codes")},
+        "attributes": {key: master.get(key) or "" for key in ("brand", "model", "dn", "pressure", "material")},
+        "decision_label": decision_labels.get(master.get("decision"), master.get("decision") or "未知"),
+        "conflicts": conflicts,
+        "applied_rules": sorted({rule for item in mapping_rows for rule in _clean_value(item.get("applied_rules")).split("/") if rule}),
+        "review_reason": review["reason"] if review else None,
+        "sources": [{
+            "material_code": item.get("material_code"), "system_source": item.get("system_source"),
+            "material_name": item.get("material_name"), "description": item.get("description"),
+        } for item in records[:20]],
+    }
+    explanation, runtime = qwen_agent.explain(evidence, bool(payload.get("use_llm", True)))
+    return jsonify({
+        "batch_id": batch_id, "mdm_code": mdm_code, "explanation": explanation,
+        "evidence": evidence, "runtime": runtime, "trace_id": g.trace_id,
     })
 
 
@@ -2978,6 +3637,7 @@ def clear_all_data():
             "mappings", "batch_masters", "records", "batches", "masters",
         ):
             conn.execute(f"DELETE FROM {table}")
+        _seed_standard_kb(conn)
     return jsonify({"cleared": True})
 
 

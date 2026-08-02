@@ -21,6 +21,7 @@ body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;b
 .engine-status{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--s);background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);padding:6px 12px;border-radius:20px}
 .engine-status.idle{color:var(--t3);background:rgba(148,163,184,.06);border-color:rgba(148,163,184,.2)}
 .engine-status .dot{width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+.view-switch{width:126px;padding:6px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;color:var(--t2);font-size:11px;outline:none}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 currentColor}50%{opacity:.7;box-shadow:0 0 0 6px transparent}}
 .tabs{display:flex;gap:2px;flex-wrap:wrap}
 .tab{padding:7px 12px;border-radius:7px;cursor:pointer;font-size:12px;color:var(--t2);transition:.15s;border:none;background:0;font-family:inherit}
@@ -307,6 +308,7 @@ tbody tr:hover{background:var(--bg3)}tbody tr.clickable{cursor:pointer}
 <nav class="nav">
   <div class="logo"><div class="logo-i">MA</div><div class="logo-t"><h1>M-AI Master</h1><p>制造集团物料主数据智能治理与共享Agent · 石油行业标准SY/T5497-2018适配版</p></div></div>
   <div class="nav-right">
+    <select class="view-switch" id="plantView" onchange="changePlantView(this.value)" title="切换集团或工厂演示视角"><option value="GROUP">集团总部视角</option><option value="SHANGHAI">上海工厂视角</option><option value="BEIJING">北京工厂视角</option></select>
     <div class="engine-status idle" id="engineStatus"><span class="dot"></span><span id="engineStatusText">等待接入数据</span></div>
     <div class="tabs" id="tabs">
       <button class="tab on" data-page="home">🏠 首页</button>
@@ -1262,13 +1264,18 @@ const STATE = {
   workflowDefinition: [],
   vectorIndex: { count:0, indexes:[] },
   vectorResults: [],
+  standardResults: [],
+  standardStats: null,
   graphData: { nodes:[], edges:[], stats:{} },
   auditChain: { blocks:[], verification:{ valid:true, block_count:0 } },
   agentPlan: null,
+  ocrResult: null,
+  evaluationResult: null,
   canonicalMasters: [],
   mdmCounters: {},
   plantCollaboration: null,
   distributionPlant: "GROUP",
+  viewPlant: "GROUP",
   feedbackPlant: "SHANGHAI",
   distributionMode: "FULL",
   distributionTargets: [],
@@ -1310,9 +1317,11 @@ function resetBatchState(){
   STATE.workflow = { steps:[], progress:0, closed_loop:false };
   STATE.vectorIndex = { count:0, indexes:[] };
   STATE.vectorResults = [];
+  STATE.standardResults = [];
   STATE.graphData = { nodes:[], edges:[], stats:{} };
   STATE.auditChain = { blocks:[], verification:{ valid:true, block_count:0 } };
   STATE.agentPlan = null;
+  STATE.ocrResult = null;
   STATE.canonicalMasters = [];
   STATE.plantCollaboration = null;
 }
@@ -1474,6 +1483,13 @@ async function loadServerState(){
       console.warn("workflow definition unavailable", error);
     }
   }
+  if(!STATE.standardStats){
+    try {
+      STATE.standardStats = await apiRequest("/standards/stats");
+    } catch(error){
+      console.warn("standard knowledge stats unavailable", error);
+    }
+  }
   const activeBatchId = STATE.currentBatch?.batch_id || getActiveBatchId();
   if(!activeBatchId){
     await apiRequest("/health");
@@ -1484,7 +1500,7 @@ async function loadServerState(){
   }
   let payload;
   try {
-    payload = await apiRequest(`/batches/${encodeURIComponent(activeBatchId)}`);
+    payload = await apiRequest(`/batches/${encodeURIComponent(activeBatchId)}?plant_code=${encodeURIComponent(STATE.viewPlant || "GROUP")}`);
   } catch(error){
     if(String(error.message || "").includes("batch not found")){
       deactivateBatch();
@@ -1517,6 +1533,19 @@ async function loadServerState(){
   }
   return payload;
 }
+
+window.changePlantView = async function(plantCode){
+  const allowed = ["GROUP","SHANGHAI","BEIJING"];
+  STATE.viewPlant = allowed.includes(plantCode) ? plantCode : "GROUP";
+  STATE.distributionPlant = STATE.viewPlant;
+  if(STATE.viewPlant !== "GROUP") STATE.feedbackPlant = STATE.viewPlant;
+  if(!STATE.currentBatch){ toast(`已切换为${$("#plantView")?.selectedOptions?.[0]?.textContent || "集团总部视角"}`, "info"); return; }
+  try {
+    await loadServerState();
+    toast(`当前数据范围：${$("#plantView")?.selectedOptions?.[0]?.textContent || STATE.viewPlant}`, "success");
+    render();
+  } catch(error){ toast("视角切换失败：" + error.message, "error"); }
+};
 
 async function updateReview(review){
   await dbPut("reviews", review);
@@ -1615,6 +1644,7 @@ function renderHome(){
         <div style="display:flex;gap:8px;align-items:center">
           <input class="input" id="agentTask" value="治理当前批次，完成跨工厂分发并收集反馈" style="flex:1" aria-label="治理任务">
           <button class="btn btn-primary" onclick="runAgentPlan()">执行编排</button>
+          <button class="btn btn-success" onclick="runCompetitionDemo()">一键闭环演示</button>
         </div>
         ${STATE.agentPlan ? `<div class="agent-result"><strong style="color:var(--t)">${esc(STATE.agentPlan.plan?.summary || "编排完成")}</strong><br>${(STATE.agentPlan.plan?.steps || []).map(item => `${item.step}. ${esc(item.name || item.code || "")}`).join(" → ")}<br><span style="color:var(--t3)">${esc(STATE.agentPlan.runtime?.warning || STATE.agentPlan.runtime?.method || "")}</span></div>` : ""}
       </div>
@@ -1828,6 +1858,7 @@ window.showMasterDetail = async function(mdmCode){
         <div style="font-size:15px;font-weight:700">${esc(master.standard_name)}</div>
         <div style="font-size:11px;color:var(--t3);margin-top:4px">${decisionTag(master.decision)} · 置信度 ${fmtPct(master.confidence)} · 来源系统 ${sources.join("/")}</div>
       </div>
+      <button class="btn btn-primary btn-sm" onclick="showAIExplanation('${esc(master.mdm_code)}')">AI 解释</button>
     </div>
     <div class="two">
       <div>
@@ -1858,6 +1889,27 @@ window.showMasterDetail = async function(mdmCode){
   showModal(html);
 };
 
+window.showAIExplanation = async function(mdmCode){
+  if(!STATE.currentBatch) return;
+  showModal(`<div class="modal-title"><span>AI 治理解释</span><span class="close">×</span></div><div class="empty"><div class="ic">AI</div><div class="title">正在整理事实证据</div><div class="desc">大模型不可用时自动使用确定性模板</div></div>`);
+  try {
+    const payload = await apiRequest("/explain", { method:"POST", body:JSON.stringify({
+      batch_id:STATE.currentBatch.batch_id, mdm_code:mdmCode, use_llm:true
+    })});
+    const evidence = payload.evidence || {}, attrs = evidence.attributes || {}, runtime = payload.runtime || {};
+    showModal(`<div class="modal-title"><span>AI 治理解释 · <code style="color:var(--a)">${esc(mdmCode)}</code></span><span class="close">×</span></div>
+      <div class="agent-result" style="font-size:13px;color:var(--t);line-height:1.9">${esc(payload.explanation || "")}</div>
+      <div class="two" style="margin-top:12px">
+        <div><div class="form-label">结构化证据</div><table style="font-size:11px"><tbody>
+          <tr><td>决策</td><td>${esc(evidence.decision_label || "-")}</td></tr><tr><td>品牌</td><td>${esc(attrs.brand || "-")}</td></tr>
+          <tr><td>型号</td><td>${esc(attrs.model || "-")}</td></tr><tr><td>口径 / 压力</td><td>${esc(attrs.dn ? `DN${attrs.dn}` : "-")} / ${esc(attrs.pressure || "-")}</td></tr>
+          <tr><td>材质</td><td>${esc(attrs.material || "-")}</td></tr><tr><td>命中规则</td><td>${esc((evidence.applied_rules || []).join(" / ") || "-")}</td></tr>
+        </tbody></table></div>
+        <div><div class="form-label">解释运行信息</div><div class="vector-hit"><strong>${esc(runtime.method || "-")}</strong><div style="color:var(--t3);margin-top:4px">模型：${esc(runtime.model || "-")} · 证据哈希：${esc(String(runtime.evidence_hash || "").slice(0,16))}</div>${runtime.warning ? `<div style="color:var(--w);margin-top:5px">${esc(runtime.warning)}</div>` : ""}</div></div>
+      </div>`);
+  } catch(error){ hideModal(); toast("AI 解释失败：" + error.message, "error"); }
+};
+
 /* ===================== 渲染：知识库 ===================== */
 function renderGovernanceGraph(graphData){
   const nodes = graphData?.nodes || [], edges = graphData?.edges || [];
@@ -1877,7 +1929,7 @@ function renderGovernanceGraph(graphData){
   const circles = nodes.map(node => {
     const point = positions.get(node.id), radius = node.node_type === "MASTER" ? 5.5 : (node.node_type === "RAW" ? 3 : 4.5);
     const label = String(node.label || node.entity_id || node.id);
-    return `<g><circle cx="${point.x}" cy="${point.y}" r="${radius}" fill="${colors[node.node_type] || '#94a3b8'}" stroke="var(--bg2)" stroke-width="1.5"><title>${esc(node.node_type)} · ${esc(label)}</title></circle>${labelIds.has(node.id) ? `<text x="${point.x + 7}" y="${point.y - 6}" fill="var(--t2)" font-size="9">${esc(label.slice(0,12))}</text>` : ""}</g>`;
+    return `<g data-node="${encodeURIComponent(node.id)}" style="cursor:pointer"><circle cx="${point.x}" cy="${point.y}" r="${radius}" fill="${colors[node.node_type] || '#94a3b8'}" stroke="var(--bg2)" stroke-width="1.5"><title>${esc(node.node_type)} · ${esc(label)} · 点击查看关系</title></circle>${labelIds.has(node.id) ? `<text x="${point.x + 7}" y="${point.y - 6}" fill="var(--t2)" font-size="9" pointer-events="none">${esc(label.slice(0,12))}</text>` : ""}</g>`;
   }).join("");
   return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="主数据治理知识图谱">${lines}${circles}</svg>`;
 }
@@ -2016,6 +2068,11 @@ function renderKB(){
           </div>
           <div class="vector-results">
             ${(STATE.vectorResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${esc(item.metadata?.standard_name || item.entity_id)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3);margin-top:3px">${esc(item.metadata?.category || "")} · ${esc(item.entity_id)}</div></div>`).join("") || `<div style="font-size:11px;color:var(--t3);padding:8px 0">输入自然语言可直接检索持久化黄金主数据向量。</div>`}
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bd)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:7px"><strong>标准知识 RAG</strong><span class="tag tag-info">standard_kb · ${fmtNum(STATE.standardStats?.count || 0)} 条</span></div>
+            <div style="display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:8px"><input class="input" id="standardQuery" value="DN150 铸钢法兰闸阀" aria-label="标准知识检索"><button class="btn btn-secondary btn-sm" onclick="runStandardSearch()">检索依据</button></div>
+            <div class="vector-results">${(STATE.standardResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between"><strong>${esc(item.category)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3)">${esc(item.reference_id)} · ${esc(item.title)}</div></div>`).join("") || `<div style="font-size:11px;color:var(--t3);padding-top:7px">检索结果返回标准引用编号、类别和相似度。</div>`}</div>
           </div>
         </div>
         <div class="card">
@@ -2189,6 +2246,24 @@ function renderIngest(){
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">▣</span>图文智能填报</div>
+          <div class="card-actions" style="font-size:11px;color:var(--t3)">PaddleOCR 本地识别 · Qwen-VL 增强 · 规则兜底</div>
+        </div>
+        <div class="two">
+          <div>
+            <div class="form-row"><label class="form-label">工业铭牌或物料图片</label><input class="input" id="ocrFile" type="file" accept="image/*"></div>
+            <div class="form-row"><label class="form-label">辅助文字（仅在真实 OCR 不可用时使用）</label><input class="input" id="ocrHint" placeholder="例如：SKF 6312-2RS1 轴承 316L"></div>
+            <div class="form-row"><label class="form-label">申请主体</label><select class="select" id="ocrPlant"><option value="GROUP">集团总部</option><option value="SHANGHAI">上海工厂</option><option value="BEIJING">北京工厂</option></select></div>
+            <button class="btn btn-primary" onclick="runImageOCR()">识别并标准化</button>
+          </div>
+          <div>
+            ${STATE.ocrResult ? renderOCRResult(STATE.ocrResult) : emptyState("▣","等待图片识别","上传真实铭牌照片后展示原文、字段、置信度和识别引擎")}
+          </div>
+        </div>
+      </div>
+
       <!-- ② 字段映射 -->
       <div class="card" id="mappingSection" style="display:none">
         <div class="card-head">
@@ -2233,6 +2308,55 @@ function renderIngest(){
     </div>
   `;
 }
+
+function renderOCRResult(result){
+  const fields = result.fields || {};
+  const providerLabel = result.real_ocr ? "真实识别" : "降级解析";
+  return `<div class="agent-result" style="margin-top:0">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
+      <strong style="color:${result.real_ocr ? "var(--s)" : "var(--w)"}">${esc(providerLabel)} · ${esc(result.provider || "unknown")}</strong>
+      <span class="tag ${result.real_ocr ? "tag-ok" : "tag-warn"}">${result.confidence == null ? "置信度未知" : `${Math.round(Number(result.confidence) * 100)}%`}</span>
+    </div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;white-space:pre-wrap;max-height:90px;overflow:auto">原始识别文字：${esc(result.raw_text || "未识别到文字")}</div>
+    <div class="q-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
+      ${[["品牌",fields.brand],["型号",fields.model],["压力",fields.pressure],["材质",fields.material],["口径",fields.dn ? `DN${fields.dn}` : ""],["品类",result.category]].map(([label,value]) => `<div class="vector-hit"><span style="color:var(--t3)">${label}</span><div style="color:var(--t);font-weight:700">${esc(value || "未识别")}</div></div>`).join("")}
+    </div>
+    <div style="margin-top:9px;color:var(--a)">标准名称预览：${esc(result.standard_name_preview || "-")}</div>
+    ${result.warning ? `<div style="margin-top:8px;color:var(--w)">${esc(result.warning)}</div>` : ""}
+    <button class="btn btn-success btn-sm" style="margin-top:10px" onclick="applyOCRToLifecycle()">转为主数据申请</button>
+  </div>`;
+}
+
+window.runImageOCR = async function(){
+  const file = $("#ocrFile")?.files?.[0];
+  if(!file){ toast("请先选择一张工业铭牌或物料图片", "warn"); return; }
+  const form = new FormData();
+  form.append("image", file);
+  form.append("hint_text", $("#ocrHint")?.value || "");
+  form.append("plant_code", $("#ocrPlant")?.value || "GROUP");
+  try {
+    STATE.ocrResult = await apiRequest("/ocr", { method:"POST", body:form });
+    toast(STATE.ocrResult.real_ocr ? `真实 OCR 完成：${STATE.ocrResult.provider}` : "真实 OCR 不可用，已明确降级解析", STATE.ocrResult.real_ocr ? "success" : "warn", 4500);
+    render();
+  } catch(error){ toast("图片识别失败：" + error.message, "error", 5000); }
+};
+
+window.applyOCRToLifecycle = function(){
+  const result = STATE.ocrResult;
+  if(!result) return;
+  STATE.currentRole = "申请人";
+  STATE.distributionPlant = result.plant_code || "GROUP";
+  switchPage("lifecycle");
+  setTimeout(() => {
+    const fields = result.fields || {};
+    if($("#lcName")) $("#lcName").value = result.standard_name_preview || result.raw_text || "";
+    if($("#lcCategory")) $("#lcCategory").value = result.category || "";
+    if($("#lcBrand")) $("#lcBrand").value = fields.brand || "";
+    if($("#lcModel")) $("#lcModel").value = fields.model || "";
+    if($("#lcDesc")) $("#lcDesc").value = result.raw_text || "";
+    if($("#lcReason")) $("#lcReason").value = `图文智能填报 · ${result.provider} · ${result.extraction_id}`;
+  }, 0);
+};
 
 /* CSV 上传流程 */
 let pendingCSV = null; // {text, encoding, headers, rows, filename}
@@ -2359,6 +2483,20 @@ window.runAgentPlan = async function(){
     toast(STATE.agentPlan.runtime?.active ? "通义千问已完成任务编排" : "已使用本地可解释Agent完成编排", "success");
     render();
   } catch(error){ toast("Agent编排失败：" + error.message, "error"); }
+};
+
+window.runCompetitionDemo = async function(){
+  try {
+    toast("正在执行多源接入、治理、跨工厂分发和反馈回流", "info", 5000);
+    const payload = await apiRequest("/demo/run", { method:"POST", body:"{}" });
+    STATE.viewPlant = "GROUP";
+    if($("#plantView")) $("#plantView").value = "GROUP";
+    await syncServerState(payload, true);
+    activateBatch(payload.batch.batch_id);
+    await loadServerState();
+    toast(`八步闭环已完成：${payload.demo_execution?.distribution_tasks || 0} 个分发任务，${payload.demo_execution?.factory_feedback || 0} 条工厂反馈`, "success", 6000);
+    render();
+  } catch(error){ toast("一键闭环演示失败：" + error.message, "error", 6000); }
 };
 
 function renderIngestSummary(){
@@ -3064,6 +3202,7 @@ function renderReviewCard(r){
         ${renderReviewDetail(r)}
       </details>
       <div class="review-actions">
+        <button class="btn btn-primary btn-sm" onclick="showAIExplanation('${esc(r.mdm_code)}')">AI 解释</button>
         <button class="btn btn-success btn-sm" onclick="approveMerge('${r.id}')">✓ 合并到当前 MDM</button>
         <button class="btn btn-warn btn-sm" onclick="approveNew('${r.id}')">🆕 创建新主数据</button>
         <button class="btn btn-ghost btn-sm" onclick="approveSkip('${r.id}')">忽略</button>
@@ -3127,15 +3266,45 @@ window.approveNew = reviewId => decideReview(reviewId, "NEW");
 window.approveSkip = reviewId => decideReview(reviewId, "SKIP");
 
 /* ===================== 渲染：质量 ===================== */
+function renderEvaluationEvidence(){
+  const evaluation = STATE.evaluationResult;
+  const result = evaluation?.result, pairwise = result?.pairwise || {}, b3 = result?.b3 || {};
+  return `<div class="card">
+    <div class="card-head">
+      <div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">✓</span>50 条人工真值集评测</div>
+      <button class="btn btn-primary btn-sm" onclick="runGroundTruthEvaluation()">运行准确率评测</button>
+    </div>
+    <p style="font-size:11px;color:var(--t3);margin-bottom:12px">独立人工标签 · 27 个真值组 · Pairwise 与 B³ 聚类指标 · 数据集哈希可追溯。该指标与业务压缩率分开呈现。</p>
+    ${result ? `<div class="kpi-grid">
+      <div class="kpi k-green"><div class="kpi-label">Pairwise Precision</div><div class="kpi-value">${fmtPct(pairwise.precision)}</div><div class="kpi-sub">建议归并的正确率</div></div>
+      <div class="kpi k-blue"><div class="kpi-label">Pairwise Recall</div><div class="kpi-value">${fmtPct(pairwise.recall)}</div><div class="kpi-sub">应归并记录的召回率</div></div>
+      <div class="kpi k-cyan"><div class="kpi-label">Pairwise F1</div><div class="kpi-value">${fmtPct(pairwise.f1)}</div><div class="kpi-sub">阈值 ${result.threshold}</div></div>
+      <div class="kpi k-violet"><div class="kpi-label">B³ F1</div><div class="kpi-value">${fmtPct(b3.f1)}</div><div class="kpi-sub">聚类整体质量</div></div>
+    </div><div style="margin-top:10px;font-size:11px;color:var(--t3)">模型：${esc(evaluation.model)} · 评测覆盖：${fmtPct(result.coverage)} · 数据集哈希：<code>${esc(String(evaluation.dataset?.hash || "").slice(0,20))}</code> · 最优扫描阈值：${evaluation.best_pairwise_f1}</div>
+    ${evaluation.warning ? `<div style="margin-top:7px;color:var(--w);font-size:11px">${esc(evaluation.warning)}</div>` : ""}` : emptyState("✓","尚未运行真值评测","点击右上角运行，约 1 秒完成")}
+  </div>`;
+}
+
+window.runGroundTruthEvaluation = async function(){
+  try {
+    STATE.evaluationResult = await apiRequest("/evaluation/run", { method:"POST", body:JSON.stringify({
+      model:"local", threshold:0.55, thresholds:[0.45,0.50,0.55,0.60,0.65]
+    })});
+    toast(`真值评测完成：Pairwise F1 ${fmtPct(STATE.evaluationResult.result?.pairwise?.f1)}`, "success");
+    render();
+  } catch(error){ toast("真值评测失败：" + error.message, "error", 5000); }
+};
+
 function renderQuality(){
   const qr = STATE.qualityReport;
-  if(!qr) return `<div class="page"><div class="card">${emptyState("📊","等待数据接入","请先上传并完成治理")}</div></div>`;
+  if(!qr) return `<div class="page">${renderEvaluationEvidence()}<div class="card">${emptyState("📊","等待数据接入","请先上传并完成治理")}</div></div>`;
   const o = qr.overall || {completeness:0, accuracy:0, consistency:0, score:0};
   const issues = qr.issues || [];
   const suggestions = [...new Set(issues.map(i => i.action).filter(Boolean))];
   const sysArr = Object.entries(qr.systems || {});
   return `
     <div class="page">
+      ${renderEvaluationEvidence()}
       <div class="card">
         <div class="card-title"><span class="icon" style="background:rgba(16,185,129,.12);color:var(--s)">📊</span>本批次数据质量报告</div>
         <p style="font-size:11px;color:var(--t3);margin-bottom:14px">报告基于本批次 ${fmtNum(STATE.records.length)} 条记录、${sysArr.length} 个数据源计算。下方每一项指标均来自真实统计。</p>
@@ -3172,7 +3341,11 @@ function renderQuality(){
 }
 
 function qualityCard(name, sys){
-  const score = sys.score || 0;
+  const count = Number(sys.recordCount ?? sys.count ?? 0);
+  const completeness = Number(sys.completeness ?? 0);
+  const accuracy = Number(sys.accuracy ?? 0);
+  const consistency = Number(sys.consistency ?? 0);
+  const score = Number(sys.score ?? 0);
   const color = score >= 80 ? "var(--s)" : score >= 60 ? "var(--w)" : "var(--d)";
   const c = 2 * Math.PI * 22, off = c * (1 - score/100);
   return `
@@ -3182,8 +3355,8 @@ function qualityCard(name, sys){
         <div class="txt" style="color:${color}">${score}%</div>
       </div>
       <div class="q-info">
-        <div class="q-name">${esc(name)} · ${sys.count || 0} 条</div>
-        <div class="q-dim">完整性 ${sys.completeness}% · 准确性 ${sys.accuracy}% · 一致性 ${sys.consistency}%</div>
+        <div class="q-name">${esc(name)} · ${count} 条</div>
+        <div class="q-dim">完整性 ${completeness}% · 准确性 ${accuracy}% · 一致性 ${consistency}%</div>
       </div>
     </div>
   `;
@@ -3565,7 +3738,7 @@ function renderDistribute(){
         <div class="card">
           <div class="card-head">
             <div class="card-title"><span class="icon" style="background:rgba(245,158,11,.12);color:var(--w)">#</span>可信审计链</div>
-            <span class="tag ${verification.valid ? "tag-ok" : "tag-danger"}">${verification.valid ? "链校验通过" : "链校验失败"}</span>
+            <div class="card-actions"><button class="btn btn-secondary btn-sm" onclick="verifyAuditChain()">实时验证</button><span class="tag ${verification.valid ? "tag-ok" : "tag-danger"}">${verification.valid ? "链校验通过" : "链校验失败"}</span></div>
           </div>
           <div class="dist-collab" style="grid-template-columns:repeat(2,1fr);margin-top:0;padding-top:0;border-top:0">
             <div class="dist-collab-item"><div class="dist-collab-label">已存证区块</div><div class="dist-collab-value">${fmtNum(verification.block_count || 0)}</div><div class="dist-collab-note">SHA-256 前序哈希</div></div>
@@ -3593,6 +3766,17 @@ window.runVectorSearch = async function(){
   } catch(error){ toast("向量检索失败：" + error.message, "error"); }
 };
 
+window.runStandardSearch = async function(){
+  const query = $("#standardQuery")?.value?.trim();
+  if(!query){ toast("请输入标准检索内容", "warn"); return; }
+  try {
+    const payload = await apiRequest("/standards/search", { method:"POST", body:JSON.stringify({ query, top_k:3 }) });
+    STATE.standardResults = payload.results || [];
+    toast(`标准知识库返回 ${STATE.standardResults.length} 条引用依据`, "success");
+    render();
+  } catch(error){ toast("标准知识检索失败：" + error.message, "error"); }
+};
+
 window.rebuildVectorStore = async function(){
   if(!STATE.currentBatch){ toast("请先治理一批数据", "warn"); return; }
   try {
@@ -3611,6 +3795,37 @@ window.refreshGovernanceGraph = async function(){
     STATE.graphData = await apiRequest(`/graph?batch_id=${encodeURIComponent(STATE.currentBatch.batch_id)}&raw_limit=50`);
     toast("治理图谱已刷新", "success"); render();
   } catch(error){ toast("图谱加载失败：" + error.message, "error"); }
+};
+
+window.inspectGraphNode = function(nodeId){
+  const graph = STATE.graphData || { nodes:[], edges:[] };
+  const node = (graph.nodes || []).find(item => item.id === nodeId);
+  if(!node) return;
+  const relations = (graph.edges || []).filter(edge => edge.source === nodeId || edge.target === nodeId).map(edge => {
+    const neighborId = edge.source === nodeId ? edge.target : edge.source;
+    const neighbor = (graph.nodes || []).find(item => item.id === neighborId) || { label:neighborId, node_type:"UNKNOWN" };
+    return { relation:edge.relation || "RELATED_TO", neighbor };
+  });
+  showModal(`<div class="modal-title"><span>图谱节点 · ${esc(node.label || node.entity_id || node.id)}</span><span class="close">×</span></div>
+    <div class="agent-result" style="margin-top:0">节点类型：<strong>${esc(node.node_type || "-")}</strong> · 中心度：${Number(node.centrality || 0).toFixed(4)} · 直接关系：${relations.length}</div>
+    <div style="display:grid;gap:6px;margin-top:12px">${relations.map(item => `<div class="vector-hit"><span class="tag tag-info">${esc(item.relation)}</span> <strong style="margin-left:6px">${esc(item.neighbor.label || item.neighbor.entity_id || item.neighbor.id)}</strong><div style="color:var(--t3);margin-top:3px">${esc(item.neighbor.node_type || "UNKNOWN")}</div></div>`).join("") || `<div style="color:var(--t3)">无直接关系</div>`}</div>`);
+};
+
+document.addEventListener("click", event => {
+  const graphNode = event.target?.closest?.('svg[aria-label="主数据治理知识图谱"] g[data-node]');
+  if(graphNode) window.inspectGraphNode(decodeURIComponent(graphNode.dataset.node || ""));
+});
+
+window.verifyAuditChain = async function(){
+  if(!STATE.currentBatch){ toast("请先治理一批数据", "warn"); return; }
+  const batchId = encodeURIComponent(STATE.currentBatch.batch_id);
+  try {
+    const verification = await apiRequest(`/blockchain/verify?batch_id=${batchId}`);
+    const blocks = await apiRequest(`/blockchain/blocks?batch_id=${batchId}`);
+    STATE.auditChain = { ...blocks, verification };
+    toast(verification.valid ? `审计链验证通过：${verification.block_count} 个区块` : `审计链验证失败：${(verification.errors || []).length} 处异常`, verification.valid ? "success" : "error", 4500);
+    render();
+  } catch(error){ toast("审计链验证失败：" + error.message, "error"); }
 };
 
 function renderDistLog(l){

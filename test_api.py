@@ -70,6 +70,8 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn("waitress", requirements)
         self.assertIn("backend/requirements.txt", root_requirements)
         self.assertTrue((PROJECT_DIR / "start-ocr.bat").exists())
+        self.assertTrue((BACKEND_DIR / "ocr_worker.py").exists())
+        self.assertIn("py install -y 3.11", (PROJECT_DIR / "install-ocr.bat").read_text(encoding="utf-8"))
         self.assertTrue((PROJECT_DIR / "evaluation" / "ground_truth_50.csv").exists())
         self.assertIn("gunicorn", start_unix)
         self.assertNotIn("MDM_FRONTEND_DIR=/app/frontend", dockerfile)
@@ -77,6 +79,9 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn("./runtime/data:/app/data", compose)
 
     def test_dynamic_field_mapping_preserves_industrial_extensions(self):
+        self.assertEqual(
+            backend.engine.extract_material("STAINLESS STEEL 316L PRESSURE RATING"), "316L"
+        )
         frame = backend.pd.read_csv(INDUSTRIAL_CSV, encoding="utf-8-sig")
         mapping = backend.map_fields(frame.columns.tolist())
         self.assertEqual(mapping["material_code"], "物料编码")
@@ -119,7 +124,7 @@ class FlaskApiTest(unittest.TestCase):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.get_json()["storage"], "sqlite")
-        self.assertEqual(health.get_json()["version"], "4.2")
+        self.assertEqual(health.get_json()["version"], "4.3")
         self.assertTrue(health.get_json()["ready"])
         self.assertFalse(health.get_json()["authentication"])
         root_response = self.client.get("/")
@@ -130,11 +135,15 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn("getWorkflowSteps", root_html)
         self.assertIn('id="plantView"', root_html)
         self.assertIn("standard_kb", root_html)
+        self.assertIn('/ocr/install', root_html)
+        self.assertIn('ocrProcessing', root_html)
+        self.assertIn('正在识别图片...', root_html)
         self.assertIn("ACTIVE_BATCH_KEY", root_html)
         self.assertIn("getActiveBatchId", root_html)
         self.assertIn("AUTO_FIELD_DEFAULTS", root_html)
         self.assertIn("out._extra", root_html)
         self.assertEqual(root_response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(root_response.headers["Cache-Control"], "no-store")
         root_response.close()
 
         state = self.upload_sample()
@@ -343,10 +352,16 @@ class FlaskApiTest(unittest.TestCase):
             "model": "local", "threshold": 0.55, "thresholds": [0.50, 0.55, 0.60],
         })
         self.assertEqual(evaluation.status_code, 200, evaluation.get_json())
-        result = evaluation.get_json()["result"]
+        evaluation_payload = evaluation.get_json()
+        result = evaluation_payload["result"]
         self.assertEqual(result["evaluated_records"], 50)
         self.assertIn("precision", result["pairwise"])
         self.assertIn("f1", result["b3"])
+        self.assertEqual(evaluation_payload["recommendation"]["threshold"], 0.60)
+        self.assertGreater(
+            evaluation_payload["recommendation"]["pairwise"]["f1"],
+            result["pairwise"]["f1"],
+        )
 
         state = self.upload_sample()
         explanation = self.client.post("/api/explain", json={

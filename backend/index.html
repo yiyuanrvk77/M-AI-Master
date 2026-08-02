@@ -1270,6 +1270,9 @@ const STATE = {
   auditChain: { blocks:[], verification:{ valid:true, block_count:0 } },
   agentPlan: null,
   ocrResult: null,
+  ocrInstall: null,
+  pendingOCR: null,
+  ocrProcessing: false,
   evaluationResult: null,
   canonicalMasters: [],
   mdmCounters: {},
@@ -1322,6 +1325,8 @@ function resetBatchState(){
   STATE.auditChain = { blocks:[], verification:{ valid:true, block_count:0 } };
   STATE.agentPlan = null;
   STATE.ocrResult = null;
+  STATE.pendingOCR = null;
+  STATE.ocrProcessing = false;
   STATE.canonicalMasters = [];
   STATE.plantCollaboration = null;
 }
@@ -1489,6 +1494,11 @@ async function loadServerState(){
     } catch(error){
       console.warn("standard knowledge stats unavailable", error);
     }
+  }
+  try {
+    STATE.ocrInstall = await apiRequest("/ocr/install");
+  } catch(error){
+    console.warn("OCR installer status unavailable", error);
   }
   const activeBatchId = STATE.currentBatch?.batch_id || getActiveBatchId();
   if(!activeBatchId){
@@ -2222,6 +2232,7 @@ function renderIngest(){
   const closedLoop = Boolean(STATE.workflow?.closed_loop);
   const hasGovernedBatch = Boolean(STATE.currentBatch && STATE.records.length);
   const pendingSteps = workflow.filter(step => step.status !== "COMPLETED").map(step => step.name);
+  const ocrBusy = Boolean(STATE.ocrProcessing || STATE.ocrInstall?.installing);
   return `
     <div class="page">
       <!-- ① 上传区 -->
@@ -2249,17 +2260,18 @@ function renderIngest(){
       <div class="card">
         <div class="card-head">
           <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">▣</span>图文智能填报</div>
-          <div class="card-actions" style="font-size:11px;color:var(--t3)">PaddleOCR 本地识别 · Qwen-VL 增强 · 规则兜底</div>
+          <div class="card-actions">${renderOCRInstallControl()}</div>
         </div>
         <div class="two">
           <div>
             <div class="form-row"><label class="form-label">工业铭牌或物料图片</label><input class="input" id="ocrFile" type="file" accept="image/*"></div>
             <div class="form-row"><label class="form-label">辅助文字（仅在真实 OCR 不可用时使用）</label><input class="input" id="ocrHint" placeholder="例如：SKF 6312-2RS1 轴承 316L"></div>
             <div class="form-row"><label class="form-label">申请主体</label><select class="select" id="ocrPlant"><option value="GROUP">集团总部</option><option value="SHANGHAI">上海工厂</option><option value="BEIJING">北京工厂</option></select></div>
-            <button class="btn btn-primary" onclick="runImageOCR()">识别并标准化</button>
+            <button class="btn btn-primary" onclick="runImageOCR()" ${ocrBusy ? "disabled" : ""}>${STATE.ocrProcessing ? "正在识别图片..." : STATE.ocrInstall?.installing ? "正在安装 OCR" : "识别并标准化"}</button>
+            ${renderOCRInstallProgress()}
           </div>
           <div>
-            ${STATE.ocrResult ? renderOCRResult(STATE.ocrResult) : emptyState("▣","等待图片识别","上传真实铭牌照片后展示原文、字段、置信度和识别引擎")}
+            ${STATE.ocrProcessing ? emptyState("◌","OCR 模型正在解析","正在提取铭牌文字与标准字段，请稍候") : STATE.ocrResult ? renderOCRResult(STATE.ocrResult) : emptyState("▣","等待图片识别","上传真实铭牌照片后展示原文、字段、置信度和识别引擎")}
           </div>
         </div>
       </div>
@@ -2309,6 +2321,41 @@ function renderIngest(){
   `;
 }
 
+function renderOCRInstallControl(){
+  const status = STATE.ocrInstall || {};
+  if(status.runtime_ready) return `<span class="tag tag-ok">PaddleOCR 已就绪</span>`;
+  if(status.installing) return `<span class="tag tag-warn">正在自动安装 · ${Math.max(3, Number(status.progress || 0))}%</span>`;
+  if(status.state === "failed" && status.trigger_allowed) return `<button class="btn btn-secondary btn-sm" onclick="startOCRInstallation()">重试安装 OCR</button>`;
+  if(status.qwen_vl_configured) return `<span class="tag tag-info">Qwen-VL 云端识别</span>`;
+  if(!status.platform_supported) return `<span class="tag tag-muted">本地安装仅支持 Windows</span>`;
+  if(!status.auto_install_enabled) return `<span class="tag tag-muted">自动安装已关闭</span>`;
+  if(!status.trigger_allowed) return `<span class="tag tag-muted">需在服务器电脑安装</span>`;
+  return `<span class="tag tag-muted">首次识别自动安装</span>`;
+}
+
+function renderOCRInstallProgress(){
+  const status = STATE.ocrInstall || {};
+  if(status.installing){
+    const progress = Math.max(3, Math.min(100, Number(status.progress || 0)));
+    return `<div style="margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t2);margin-bottom:6px"><span>正在下载 Python 3.11、OCR 依赖和模型</span><strong>${progress}%</strong></div>
+      <div style="height:7px;background:var(--bg3);border-radius:4px;overflow:hidden"><div style="height:100%;width:${progress}%;background:var(--pl);transition:width .25s"></div></div>
+      <div style="font-size:10px;color:var(--t3);margin-top:6px">首次安装可能需要数分钟，请保持平台运行；完成后会自动继续识别。</div>
+    </div>`;
+  }
+  if(status.state === "failed"){
+    const lastLine = String(status.log_tail || "安装失败，请检查网络、代理和磁盘空间").trim().split("\n").slice(-2).join(" · ");
+    return `<div style="margin-top:10px;padding:9px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:10px;color:var(--d)">${esc(lastLine)}</div>`;
+  }
+  if(!status.runtime_ready && !status.qwen_vl_configured && status.trigger_allowed){
+    return `<div style="font-size:10px;color:var(--t3);margin-top:8px">首次点击会自动安装本地 OCR；如果网络受限，系统仍会使用辅助文字降级处理。</div>`;
+  }
+  if(!status.runtime_ready && !status.qwen_vl_configured){
+    return `<div style="font-size:10px;color:var(--t3);margin-top:8px">当前浏览器不能触发服务器安装；请由服务器管理员运行 install-ocr.bat，识别请求仍可使用辅助文字降级处理。</div>`;
+  }
+  return "";
+}
+
 function renderOCRResult(result){
   const fields = result.fields || {};
   const providerLabel = result.real_ocr ? "真实识别" : "降级解析";
@@ -2327,18 +2374,90 @@ function renderOCRResult(result){
   </div>`;
 }
 
-window.runImageOCR = async function(){
-  const file = $("#ocrFile")?.files?.[0];
-  if(!file){ toast("请先选择一张工业铭牌或物料图片", "warn"); return; }
+let ocrInstallPollTimer = null;
+
+async function submitPendingOCR(pending){
+  if(!pending?.file) return;
+  STATE.ocrProcessing = true;
+  if(STATE.currentPage === "ingest") render();
   const form = new FormData();
-  form.append("image", file);
-  form.append("hint_text", $("#ocrHint")?.value || "");
-  form.append("plant_code", $("#ocrPlant")?.value || "GROUP");
+  form.append("image", pending.file);
+  form.append("hint_text", pending.hint || "");
+  form.append("plant_code", pending.plant || "GROUP");
   try {
     STATE.ocrResult = await apiRequest("/ocr", { method:"POST", body:form });
+    STATE.ocrInstall = STATE.ocrResult.install_status || STATE.ocrInstall;
+    STATE.pendingOCR = null;
     toast(STATE.ocrResult.real_ocr ? `真实 OCR 完成：${STATE.ocrResult.provider}` : "真实 OCR 不可用，已明确降级解析", STATE.ocrResult.real_ocr ? "success" : "warn", 4500);
+  } catch(error){
+    toast("图片识别失败：" + error.message, "error", 5000);
+  } finally {
+    STATE.ocrProcessing = false;
+    if(STATE.currentPage === "ingest") render();
+  }
+}
+
+async function pollOCRInstallation(){
+  if(ocrInstallPollTimer) clearTimeout(ocrInstallPollTimer);
+  try {
+    STATE.ocrInstall = await apiRequest("/ocr/install");
+    if(STATE.currentPage === "ingest") render();
+    if(STATE.ocrInstall.installing){
+      ocrInstallPollTimer = setTimeout(pollOCRInstallation, 1500);
+      return;
+    }
+    if(STATE.ocrInstall.runtime_ready){
+      toast("PaddleOCR 安装完成，正在继续识别图片", "success", 4000);
+      const pending = STATE.pendingOCR;
+      if(pending) await submitPendingOCR(pending);
+      return;
+    }
+    if(STATE.ocrInstall.state === "failed"){
+      toast("本地 OCR 安装失败，已继续使用云端或规则降级", "warn", 5000);
+      const pending = STATE.pendingOCR;
+      if(pending) await submitPendingOCR(pending);
+    }
+  } catch(error){
+    toast("OCR 安装状态检查失败：" + error.message, "error", 5000);
+  }
+}
+
+window.startOCRInstallation = async function(){
+  try {
+    STATE.ocrInstall = await apiRequest("/ocr/install", { method:"POST" });
+    toast("已开始下载本地 OCR 运行环境", "info", 4000);
     render();
-  } catch(error){ toast("图片识别失败：" + error.message, "error", 5000); }
+    await pollOCRInstallation();
+  } catch(error){
+    toast("无法启动 OCR 安装：" + error.message, "error", 5000);
+    const pending = STATE.pendingOCR;
+    if(pending) await submitPendingOCR(pending);
+  }
+};
+
+window.runImageOCR = async function(){
+  if(STATE.ocrProcessing) return;
+  const file = $("#ocrFile")?.files?.[0];
+  if(!file){ toast("请先选择一张工业铭牌或物料图片", "warn"); return; }
+  STATE.pendingOCR = { file, hint:$("#ocrHint")?.value || "", plant:$("#ocrPlant")?.value || "GROUP" };
+  STATE.ocrResult = null;
+  STATE.ocrProcessing = true;
+  toast("图片已提交，PaddleOCR 正在识别，请稍候", "info", 8000);
+  render();
+  try {
+    STATE.ocrInstall = await apiRequest("/ocr/install");
+    const shouldInstall = !STATE.ocrInstall.runtime_ready && !STATE.ocrInstall.qwen_vl_configured && STATE.ocrInstall.trigger_allowed;
+    if(shouldInstall){ await window.startOCRInstallation(); return; }
+    await submitPendingOCR(STATE.pendingOCR);
+  } catch(error){
+    toast("OCR 能力检测失败，继续使用降级识别", "warn", 4000);
+    await submitPendingOCR(STATE.pendingOCR);
+  } finally {
+    if(STATE.ocrProcessing && !STATE.ocrInstall?.installing){
+      STATE.ocrProcessing = false;
+      render();
+    }
+  }
 };
 
 window.applyOCRToLifecycle = function(){
@@ -3269,6 +3388,7 @@ window.approveSkip = reviewId => decideReview(reviewId, "SKIP");
 function renderEvaluationEvidence(){
   const evaluation = STATE.evaluationResult;
   const result = evaluation?.result, pairwise = result?.pairwise || {}, b3 = result?.b3 || {};
+  const recommendation = evaluation?.recommendation || {}, recommendedPairwise = recommendation.pairwise || {};
   return `<div class="card">
     <div class="card-head">
       <div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">✓</span>50 条人工真值集评测</div>
@@ -3280,7 +3400,7 @@ function renderEvaluationEvidence(){
       <div class="kpi k-blue"><div class="kpi-label">Pairwise Recall</div><div class="kpi-value">${fmtPct(pairwise.recall)}</div><div class="kpi-sub">应归并记录的召回率</div></div>
       <div class="kpi k-cyan"><div class="kpi-label">Pairwise F1</div><div class="kpi-value">${fmtPct(pairwise.f1)}</div><div class="kpi-sub">阈值 ${result.threshold}</div></div>
       <div class="kpi k-violet"><div class="kpi-label">B³ F1</div><div class="kpi-value">${fmtPct(b3.f1)}</div><div class="kpi-sub">聚类整体质量</div></div>
-    </div><div style="margin-top:10px;font-size:11px;color:var(--t3)">模型：${esc(evaluation.model)} · 评测覆盖：${fmtPct(result.coverage)} · 数据集哈希：<code>${esc(String(evaluation.dataset?.hash || "").slice(0,20))}</code> · 最优扫描阈值：${evaluation.best_pairwise_f1}</div>
+    </div>${recommendation.threshold != null ? `<div class="agent-result" style="margin-top:10px;border-color:rgba(16,185,129,.35)"><strong style="color:var(--s)">阈值校准建议 ≥ ${recommendation.threshold}</strong> · Precision ${fmtPct(recommendedPairwise.precision)} · Recall ${fmtPct(recommendedPairwise.recall)} · F1 ${fmtPct(recommendedPairwise.f1)}<div style="color:var(--t3);margin-top:4px">${esc(recommendation.selection_basis || "仅供校准，不自动修改生产阈值")}</div></div>` : ""}<div style="margin-top:10px;font-size:11px;color:var(--t3)">模型：${esc(evaluation.model)} · 当前策略阈值：${result.threshold} · 评测覆盖：${fmtPct(result.coverage)} · 数据集哈希：<code>${esc(String(evaluation.dataset?.hash || "").slice(0,20))}</code></div>
     ${evaluation.warning ? `<div style="margin-top:7px;color:var(--w);font-size:11px">${esc(evaluation.warning)}</div>` : ""}` : emptyState("✓","尚未运行真值评测","点击右上角运行，约 1 秒完成")}
   </div>`;
 }

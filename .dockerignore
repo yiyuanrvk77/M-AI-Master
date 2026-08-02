@@ -1,5 +1,6 @@
 .git
 .venv
+.venv-ocr
 runtime
 __pycache__
 *.py[cod]

@@ -17,7 +17,9 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -54,6 +56,16 @@ def _load_local_env(path: Path) -> None:
 
 _load_local_env(BASE_DIR / ".env")
 PROJECT_DIR = BASE_DIR.parent
+OCR_RUNTIME_DIR = PROJECT_DIR / ".venv-ocr"
+OCR_RUNTIME_PYTHON = OCR_RUNTIME_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+OCR_READY_MARKER = PROJECT_DIR / "runtime" / "ocr-ready"
+OCR_WORKER_PATH = BASE_DIR / "ocr_worker.py"
+OCR_INSTALL_LOG = PROJECT_DIR / "runtime" / "ocr-install.log"
+OCR_INSTALL_LOCK = PROJECT_DIR / "runtime" / "ocr-installing.lock"
+
+
+def _external_ocr_ready() -> bool:
+    return OCR_RUNTIME_PYTHON.is_file() and OCR_READY_MARKER.is_file() and OCR_WORKER_PATH.is_file()
 
 
 def _config_path(name: str, default: Path) -> Path:
@@ -65,7 +77,7 @@ FRONTEND_DIR = _config_path("MDM_FRONTEND_DIR", BASE_DIR)
 FRONTEND_FILE = os.environ.get("MDM_FRONTEND_FILE", "index.html")
 DB_PATH = _config_path("MDM_DB_PATH", BASE_DIR / "mdm_data.db")
 MAX_RECORDS = int(os.environ.get("MDM_MAX_RECORDS", "10000"))
-APP_VERSION = "4.2"
+APP_VERSION = "4.3"
 AUTH_USER = os.environ.get("MDM_AUTH_USER", "admin").strip() or "admin"
 AUTH_PASSWORD = os.environ.get("MDM_AUTH_PASSWORD", "")
 GROUND_TRUTH_PATH = PROJECT_DIR / "evaluation" / "ground_truth_50.csv"
@@ -109,6 +121,8 @@ def attach_trace_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "same-origin"
+    if request.path == "/":
+        response.headers["Cache-Control"] = "no-store"
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
         logger.info(
@@ -805,7 +819,7 @@ class AIGovernanceEngine:
             ("丁腈橡胶", r"丁腈|nbr"), ("硅橡胶", r"硅橡胶|vmq|silicone"),
             ("氟橡胶", r"氟橡胶|fkm|viton|氟胶"), ("碳化硅", r"碳化硅|sic"),
             ("铬钼钢", r"铬钼钢|crmo"), ("哈氏合金", r"哈氏合金|c276|hastelloy"),
-            ("钛合金", r"钛合金|钛材|titanium|ti"), ("316L", r"316l|sus316l"),
+            ("钛合金", r"钛合金|钛材|titanium|(?<![a-z0-9])ti(?![a-z0-9])"), ("316L", r"316l|sus316l"),
             ("316", r"(316|316ss|sus316)(?!l)"), ("304L", r"304l|cf3"),
             ("304", r"(304|304ss|cf8|sus304)(?!l)"),
             ("2205", r"2205|双相钢|duplex"), ("Q235", r"q235|q235b"), ("铸钢", r"铸钢|碳钢|wcb"),
@@ -1256,11 +1270,14 @@ class OCREngine:
         self._paddle_error = ""
 
     def status(self) -> dict:
-        installed = importlib.util.find_spec("paddleocr") is not None
+        local_installed = importlib.util.find_spec("paddleocr") is not None
+        external_ready = _external_ocr_ready()
         return {
             "paddle_enabled": self.paddle_enabled,
-            "paddle_installed": installed,
-            "paddle_ready": bool(self._paddle),
+            "paddle_installed": local_installed or external_ready,
+            "paddle_ready": bool(self._paddle) or external_ready,
+            "paddle_mode": "isolated-python-3.11" if external_ready else ("in-process" if local_installed else "missing"),
+            "external_runtime_ready": external_ready,
             "paddle_error": self._paddle_error or None,
             "qwen_vl_configured": bool(self.qwen_key),
             "qwen_vl_model": self.qwen_model,
@@ -1292,11 +1309,11 @@ class OCREngine:
 
             try:
                 self._paddle = PaddleOCR(
-                    lang=self.paddle_lang, use_doc_orientation_classify=False,
+                    lang=self.paddle_lang, enable_mkldnn=False, use_doc_orientation_classify=False,
                     use_doc_unwarping=False, use_textline_orientation=False,
                 )
             except TypeError:
-                self._paddle = PaddleOCR(lang=self.paddle_lang, use_angle_cls=True)
+                self._paddle = PaddleOCR(lang=self.paddle_lang, use_angle_cls=True, enable_mkldnn=False)
             self._paddle_error = ""
             return self._paddle
         except Exception as exc:
@@ -1359,8 +1376,11 @@ class OCREngine:
         return texts, scores
 
     def _paddle_recognize(self, image_bytes: bytes, filename: str) -> tuple[str, float | None]:
-        paddle = self._load_paddle()
-        if paddle is None:
+        external_ready = _external_ocr_ready()
+        # The validated Python 3.11 worker is the primary Windows path. Loading
+        # PaddleOCR in the Flask runtime can select an incompatible oneDNN build.
+        paddle = None if external_ready else self._load_paddle()
+        if paddle is None and not external_ready:
             return "", None
         suffix = Path(filename or "image.jpg").suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}:
@@ -1370,10 +1390,26 @@ class OCREngine:
             with tempfile.NamedTemporaryFile(prefix="mai-ocr-", suffix=suffix, delete=False) as temp_file:
                 temp_file.write(image_bytes)
                 temp_path = Path(temp_file.name)
-            result = list(paddle.predict(str(temp_path))) if hasattr(paddle, "predict") else paddle.ocr(str(temp_path), cls=True)
-            texts, scores = self._extract_lines(result)
-            confidence = round(sum(scores) / len(scores), 4) if scores else None
-            return "\n".join(texts), confidence
+            if paddle is not None:
+                result = list(paddle.predict(str(temp_path))) if hasattr(paddle, "predict") else paddle.ocr(str(temp_path), cls=True)
+                texts, scores = self._extract_lines(result)
+                confidence = round(sum(scores) / len(scores), 4) if scores else None
+                return "\n".join(texts), confidence
+            worker = subprocess.run(
+                [str(OCR_RUNTIME_PYTHON), str(OCR_WORKER_PATH), "--image", str(temp_path), "--lang", self.paddle_lang],
+                cwd=str(PROJECT_DIR), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=int(os.getenv("MDM_OCR_WORKER_TIMEOUT", "180")),
+                env={**os.environ, "PADDLE_PDX_MODEL_SOURCE": os.getenv("PADDLE_PDX_MODEL_SOURCE", "BOS")},
+            )
+            payload = None
+            for line in reversed((worker.stdout or "").splitlines()):
+                if line.startswith("MAI_OCR_RESULT="):
+                    payload = json.loads(line.split("=", 1)[1])
+                    break
+            if worker.returncode or not payload or not payload.get("ready"):
+                detail = (payload or {}).get("error") or (worker.stderr or worker.stdout or "worker failed")[-500:]
+                raise RuntimeError(detail)
+            return _clean_value(payload.get("text")), payload.get("confidence")
         except Exception as exc:
             self._paddle_error = f"{type(exc).__name__}: {exc}"
             logger.warning("PaddleOCR inference failed: %s", exc)
@@ -1431,6 +1467,105 @@ class OCREngine:
             "real_ocr": provider in {"paddleocr-local", "qwen-vl"},
             "warning": "；".join(warnings) or None,
         }
+
+
+class OCRInstallManager:
+    """Runs the fixed Windows installer asynchronously and exposes bounded progress."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._process: subprocess.Popen | None = None
+        self._started_at: str | None = None
+        self._exit_code: int | None = None
+
+    @staticmethod
+    def _log_tail() -> str:
+        if not OCR_INSTALL_LOG.is_file():
+            return ""
+        try:
+            text = OCR_INSTALL_LOG.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"(https?://)[^/\s:@]+:[^@\s/]+@", r"\1***:***@", text)
+            text = re.sub(r"\b(?:sk-|gh[pousr]_)[A-Za-z0-9_-]{12,}\b", "***", text)
+            return "\n".join(text.splitlines()[-30:])[-5000:]
+        except OSError:
+            return ""
+
+    def status(self) -> dict:
+        with self._lock:
+            process = self._process
+            if process is not None:
+                code = process.poll()
+                if code is not None:
+                    self._exit_code = code
+                    self._process = None
+            else:
+                code = self._exit_code
+            lock_active = OCR_INSTALL_LOCK.is_dir()
+            if lock_active and process is None:
+                try:
+                    max_lock_age = max(60, int(os.getenv("MDM_OCR_INSTALL_LOCK_SECONDS", "3600")))
+                    if time.time() - OCR_INSTALL_LOCK.stat().st_mtime >= max_lock_age:
+                        OCR_INSTALL_LOCK.rmdir()
+                        lock_active = False
+                except (OSError, ValueError):
+                    pass
+            running = (process is not None and process.poll() is None) or lock_active
+            ready = _external_ocr_ready() or importlib.util.find_spec("paddleocr") is not None
+            log_tail = self._log_tail()
+            progress = 100 if ready else 0
+            for marker, value in (("[1/4]", 10), ("[2/4]", 25), ("[3/4]", 45), ("[4/4]", 80)):
+                if marker in log_tail:
+                    progress = max(progress, value)
+            if ready:
+                state = "ready"
+            elif running:
+                state = "installing"
+            elif code not in (None, 0):
+                state = "failed"
+            else:
+                state = "missing"
+            return {
+                "state": state, "progress": progress, "runtime_ready": ready,
+                "installing": running, "started_at": self._started_at, "exit_code": code,
+                "log_tail": log_tail, "platform_supported": os.name == "nt",
+                "auto_install_enabled": os.getenv("MDM_ALLOW_OCR_INSTALL", "1") == "1",
+                "qwen_vl_configured": bool(os.getenv("DASHSCOPE_API_KEY", "").strip()),
+            }
+
+    def start(self) -> dict:
+        with self._lock:
+            if _external_ocr_ready() or importlib.util.find_spec("paddleocr") is not None:
+                return self.status()
+            if self._process is not None and self._process.poll() is None:
+                return self.status()
+            if OCR_INSTALL_LOCK.is_dir():
+                age_seconds = time.time() - OCR_INSTALL_LOCK.stat().st_mtime
+                if age_seconds < 3600:
+                    return self.status()
+                try:
+                    OCR_INSTALL_LOCK.rmdir()
+                except OSError:
+                    return self.status()
+            if os.name != "nt":
+                raise RuntimeError("automatic OCR installation is supported only on Windows")
+            script = PROJECT_DIR / "install-ocr.bat"
+            if not script.is_file():
+                raise RuntimeError("install-ocr.bat is missing")
+            OCR_INSTALL_LOG.parent.mkdir(parents=True, exist_ok=True)
+            OCR_READY_MARKER.unlink(missing_ok=True)
+            self._exit_code = None
+            self._started_at = _utc_now()
+            log_file = OCR_INSTALL_LOG.open("w", encoding="utf-8", errors="replace")
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                self._process = subprocess.Popen(
+                    ["cmd.exe", "/d", "/c", str(script), "--non-interactive"],
+                    cwd=str(PROJECT_DIR), stdout=log_file, stderr=subprocess.STDOUT,
+                    creationflags=flags, env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                )
+            finally:
+                log_file.close()
+        return self.status()
 
 
 class SemanticDemoGovernor:
@@ -1626,6 +1761,7 @@ class SemanticDemoGovernor:
 semantic_engine = SemanticEngine()
 semantic_governor = SemanticDemoGovernor(semantic_engine, engine)
 ocr_engine = OCREngine()
+ocr_installer = OCRInstallManager()
 
 
 def _seed_standard_kb(conn: sqlite3.Connection) -> dict:
@@ -2862,6 +2998,44 @@ def verify_blockchain():
         return jsonify(_verify_audit_chain(conn, batch_id))
 
 
+def _request_is_loopback() -> bool:
+    remote = (request.remote_addr or "").split("%", 1)[0]
+    loopback = {"127.0.0.1", "::1", "localhost"}
+    if remote not in loopback:
+        return False
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        clients = [item.strip().split("%", 1)[0] for item in forwarded.split(",") if item.strip()]
+        if not clients or any(client not in loopback for client in clients):
+            return False
+    forwarded_header = request.headers.get("Forwarded", "")
+    if forwarded_header:
+        forwarded_for = re.findall(r"for=(?:\"?\[?)([^\] ;,\"]+)", forwarded_header, flags=re.I)
+        if not forwarded_for or any(client.split("%", 1)[0] not in loopback for client in forwarded_for):
+            return False
+    return True
+
+
+@app.route("/api/ocr/install", methods=["GET", "POST"])
+def api_ocr_install():
+    status = ocr_installer.status()
+    status["trigger_allowed"] = (
+        _request_is_loopback() and status["platform_supported"] and status["auto_install_enabled"]
+    )
+    if request.method == "GET":
+        return jsonify(status)
+    if not _request_is_loopback():
+        return jsonify({"error": "OCR installation can only be started from the server computer"}), 403
+    if not status["auto_install_enabled"]:
+        return jsonify({"error": "automatic OCR installation is disabled by MDM_ALLOW_OCR_INSTALL"}), 403
+    try:
+        started = ocr_installer.start()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    started["trigger_allowed"] = True
+    return jsonify(started), 200 if started["runtime_ready"] else 202
+
+
 @app.post("/api/ocr")
 def api_ocr():
     uploaded = request.files.get("image") or request.files.get("file")
@@ -2905,6 +3079,7 @@ def api_ocr():
         "plant_code": _normalize_plant_code(payload.get("plant_code")),
         "warning": recognition["warning"],
         "engine_status": ocr_engine.status(),
+        "install_status": ocr_installer.status(),
     })
 
 
@@ -3033,10 +3208,20 @@ def run_ground_truth_evaluation():
         )}
         sweep.append(primary_result)
         sweep.sort(key=lambda item: item["threshold"])
+    recommended_result = max(
+        sweep,
+        key=lambda item: (item["pairwise"]["f1"], item["pairwise"]["precision"], -item["threshold"]),
+    )
     return jsonify({
         "dataset": {"name": "50条物料归并人工真值集", "hash": dataset_hash, "record_count": len(labels)},
         "model": model, "semantic": semantic_meta, "result": primary_result, "threshold_sweep": sweep,
-        "best_pairwise_f1": max(sweep, key=lambda item: item["pairwise"]["f1"])["threshold"],
+        "best_pairwise_f1": recommended_result["threshold"],
+        "recommendation": {
+            "threshold": recommended_result["threshold"],
+            "pairwise": recommended_result["pairwise"],
+            "b3": recommended_result["b3"],
+            "selection_basis": "当前真值集 Pairwise F1 最大值；仅作为阈值校准建议，不自动修改生产治理阈值。",
+        },
         "warning": "该结果仅代表当前真值集；新增数据域需重新抽样标注，不能外推为全域准确率。",
         "trace_id": g.trace_id,
     })

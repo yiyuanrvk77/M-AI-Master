@@ -5,7 +5,7 @@ services:
       dockerfile: backend/Dockerfile
       args:
         INSTALL_OCR: "${MDM_INSTALL_OCR:-0}"
-    image: mai-master:4.2
+    image: mai-master:4.3
     container_name: mai-master
     restart: unless-stopped
     ports:

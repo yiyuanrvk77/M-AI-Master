@@ -1,0 +1,35 @@
+name: M-AI Master CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install application dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run API regression suite
+        run: python -m unittest -v test_api.py
+      - name: Run resilience suite
+        run: python -m unittest -v test_chaos.py
+      - name: Validate frontend JavaScript syntax
+        run: >-
+          node -e "const fs=require('fs'),vm=require('vm');
+          const html=fs.readFileSync('backend/index.html','utf8');
+          const match=html.match(/<script>([\s\S]*)<\/script>/);
+          if(!match) throw new Error('inline script not found');
+          new vm.Script(match[1]);"

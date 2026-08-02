@@ -1,5 +1,6 @@
 backend/.env
 .venv/
+.venv-ocr/
 runtime/
 backend/server.stdout.log
 backend/server.stderr.log

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -27,6 +28,11 @@ import app as backend  # noqa: E402
 
 
 class ChaosTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        backend.DB_PATH = Path(TEST_DIR.name) / "chaos.db"
+        backend.init_db()
+
     @classmethod
     def tearDownClass(cls):
         TEST_DIR.cleanup()
@@ -86,6 +92,56 @@ class ChaosTest(unittest.TestCase):
         self.assertFalse(response.get_json()["real_ocr"])
         self.assertEqual(response.get_json()["provider"], "rule-fallback")
         self.assertTrue(response.get_json()["warning"])
+
+    def test_ocr_auto_install_is_local_only_and_asynchronous(self):
+        remote = self.client.post("/api/ocr/install", environ_base={"REMOTE_ADDR": "192.168.1.20"})
+        self.assertEqual(remote.status_code, 403)
+        proxied = self.client.post(
+            "/api/ocr/install",
+            headers={"X-Forwarded-For": "203.0.113.20"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        self.assertEqual(proxied.status_code, 403)
+        mocked = {
+            "state": "installing", "progress": 10, "runtime_ready": False, "installing": True,
+            "platform_supported": True, "auto_install_enabled": True, "qwen_vl_configured": False,
+        }
+        with patch.object(backend.ocr_installer, "start", return_value=mocked):
+            local = self.client.post("/api/ocr/install", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertEqual(local.status_code, 202)
+        self.assertTrue(local.get_json()["trigger_allowed"])
+
+    def test_isolated_python_ocr_worker_result_is_consumed(self):
+        class WorkerResult:
+            returncode = 0
+            stderr = ""
+            stdout = "worker log\nMAI_OCR_RESULT=" + json.dumps({
+                "ready": True, "text": "SKF 6312 轴承", "confidence": 0.96,
+            }, ensure_ascii=False)
+
+        with patch.object(backend.ocr_engine, "_load_paddle") as load_paddle, patch.object(
+            backend, "_external_ocr_ready", return_value=True
+        ), patch.object(backend.subprocess, "run", return_value=WorkerResult()):
+            text, confidence = backend.ocr_engine._paddle_recognize(b"image", "nameplate.jpg")
+        load_paddle.assert_not_called()
+        self.assertEqual(text, "SKF 6312 轴承")
+        self.assertEqual(confidence, 0.96)
+
+    def test_stale_ocr_install_lock_is_cleared(self):
+        stale_lock = Path(TEST_DIR.name) / "stale-ocr.lock"
+        stale_lock.mkdir()
+        stale_time = backend.time.time() - 7200
+        os.utime(stale_lock, (stale_time, stale_time))
+        with patch.object(backend, "OCR_INSTALL_LOCK", stale_lock), patch.object(
+            backend, "_external_ocr_ready", return_value=False
+        ), patch.object(backend.importlib.util, "find_spec", return_value=None), patch.dict(
+            os.environ, {"MDM_OCR_INSTALL_LOCK_SECONDS": "3600"}
+        ):
+            backend.ocr_installer._process = None
+            backend.ocr_installer._exit_code = None
+            status = backend.ocr_installer.status()
+        self.assertFalse(status["installing"])
+        self.assertFalse(stale_lock.exists())
 
     def test_audit_tampering_is_detected(self):
         state = self.upload_sample()

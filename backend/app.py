@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import quote
 
 import chardet
 import networkx as nx
@@ -77,11 +78,9 @@ FRONTEND_DIR = _config_path("MDM_FRONTEND_DIR", BASE_DIR)
 FRONTEND_FILE = os.environ.get("MDM_FRONTEND_FILE", "index.html")
 DB_PATH = _config_path("MDM_DB_PATH", BASE_DIR / "mdm_data.db")
 MAX_RECORDS = int(os.environ.get("MDM_MAX_RECORDS", "10000"))
-APP_VERSION = "4.3"
+APP_VERSION = "4.4"
 AUTH_USER = os.environ.get("MDM_AUTH_USER", "admin").strip() or "admin"
 AUTH_PASSWORD = os.environ.get("MDM_AUTH_PASSWORD", "")
-GROUND_TRUTH_PATH = PROJECT_DIR / "evaluation" / "ground_truth_50.csv"
-GROUND_TRUTH_SOURCE = PROJECT_DIR / "备品备件脏数据.csv"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MDM_MAX_UPLOAD_BYTES", 20 * 1024 * 1024))
@@ -163,8 +162,33 @@ STANDARD_KB = [
 ]
 PLANT_ALIASES = {
     "集团": "GROUP", "集团总部": "GROUP", "总部": "GROUP", "group": "GROUP", "hq": "GROUP",
-    "上海": "SHANGHAI", "上海工厂": "SHANGHAI", "shanghai": "SHANGHAI", "sh": "SHANGHAI",
-    "北京": "BEIJING", "北京工厂": "BEIJING", "beijing": "BEIJING", "bj": "BEIJING",
+    "上海": "SHANGHAI", "上海厂": "SHANGHAI", "上海工厂": "SHANGHAI", "shanghai": "SHANGHAI", "sh": "SHANGHAI",
+    "北京": "BEIJING", "北京厂": "BEIJING", "北京工厂": "BEIJING", "beijing": "BEIJING", "bj": "BEIJING",
+}
+
+SOURCE_CONNECTORS = {
+    "SAP": {"id": "sap-odata", "label": "SAP ERP OData", "table": "MARA", "env": "MDM_SAP_SOURCE_URL"},
+    "ERP": {"id": "erp-rest", "label": "ERP 主数据接口", "table": "MATERIAL_MASTER", "env": "MDM_ERP_SOURCE_URL"},
+    "EAM": {"id": "eam-rest", "label": "EAM 设备物资接口", "table": "EAM_MATERIAL", "env": "MDM_EAM_SOURCE_URL"},
+    "MES": {"id": "mes-rest", "label": "MES 物料接口", "table": "MES_MATERIAL", "env": "MDM_MES_SOURCE_URL"},
+    "WMS": {"id": "wms-rest", "label": "WMS 库存物料接口", "table": "WMS_ITEM", "env": "MDM_WMS_SOURCE_URL"},
+    "采购": {"id": "procurement-rest", "label": "采购平台物料接口", "table": "PURCHASE_ITEM", "env": "MDM_PROCUREMENT_SOURCE_URL"},
+    "CSV": {"id": "file-import", "label": "文件接入适配器", "table": "CSV_ROW", "env": ""},
+}
+
+PROVENANCE_ALIASES = {
+    "source_record_id": ("源记录id", "源记录编号", "原记录id", "业务主键", "source_record_id", "record_id", "object_id"),
+    "source_table": ("源表", "来源表", "业务对象", "source_table", "table_name", "object_type"),
+    "source_url": ("源记录链接", "来源链接", "source_url", "record_url", "deep_link"),
+}
+
+DISTRIBUTION_SYSTEM_ALIASES = {
+    "SAP": ("sap", "sap系统"),
+    "ERP": ("erp", "erp系统"),
+    "EAM": ("eam", "eam系统", "设备系统", "资产系统"),
+    "MES": ("mes", "mes系统", "制造系统", "生产系统"),
+    "WMS": ("wms", "wms系统", "仓储系统", "库存系统", "仓库系统"),
+    "PROCUREMENT": ("采购平台", "采购系统", "采购"),
 }
 
 
@@ -191,6 +215,89 @@ def _normalize_plant_code(value, default: str = "GROUP") -> str:
         return alias
     code = re.sub(r"[^A-Z0-9_-]", "", raw.upper())
     return code or default
+
+
+def _connector_profile(system_source: str) -> dict:
+    source = _clean_value(system_source)
+    upper = source.upper()
+    key = next((name for name in ("SAP", "ERP", "EAM", "MES", "WMS") if name in upper), None)
+    if not key and "采购" in source:
+        key = "采购"
+    if not key:
+        key = "CSV"
+    profile = dict(SOURCE_CONNECTORS[key])
+    profile["system"] = source or "CSV导入"
+    profile["base_url"] = os.environ.get(profile.get("env") or "", "").strip() if profile.get("env") else ""
+    return profile
+
+
+def _extra_value(extra: dict, aliases: tuple[str, ...]) -> str:
+    normalized = {_normalize_header(key): _clean_value(value) for key, value in (extra or {}).items()}
+    for alias in aliases:
+        value = normalized.get(_normalize_header(alias))
+        if value:
+            return value
+    return ""
+
+
+def _record_quality_issues(record: dict, attributes: dict | None = None) -> list[dict]:
+    attributes = attributes or {}
+    issues = []
+    required = (
+        ("material_code", "物料编码", "HIGH"), ("material_name", "物料名称", "HIGH"),
+        ("description", "物料描述", "MEDIUM"), ("category", "物料分类", "MEDIUM"),
+        ("unit", "计量单位", "MEDIUM"), ("system_source", "来源系统", "HIGH"),
+    )
+    for field, label, severity in required:
+        if not _clean_value(record.get(field)):
+            issues.append({"code": f"MISSING_{field.upper()}", "field": field, "label": label,
+                           "severity": severity, "message": f"{label}缺失"})
+    category = _clean_value(record.get("category") or attributes.get("category"))
+    if not category or category == "其他":
+        issues.append({"code": "CATEGORY_UNRESOLVED", "field": "category", "label": "物料分类",
+                       "severity": "MEDIUM", "message": "未匹配到明确标准品类"})
+    return issues
+
+
+def _build_source_provenance(
+    record: dict, attributes: dict, batch_id: str, filename: str, row_number: int
+) -> tuple[dict, list[dict]]:
+    extra = record.get("_extra") if isinstance(record.get("_extra"), dict) else {}
+    profile = _connector_profile(record.get("system_source", ""))
+    source_record_id = _extra_value(extra, PROVENANCE_ALIASES["source_record_id"]) or _clean_value(record.get("material_code")) or f"ROW-{row_number:06d}"
+    source_table = _extra_value(extra, PROVENANCE_ALIASES["source_table"]) or profile["table"]
+    explicit_url = _extra_value(extra, PROVENANCE_ALIASES["source_url"])
+    if explicit_url and not re.match(r"^https?://", explicit_url, flags=re.IGNORECASE):
+        explicit_url = ""
+    if explicit_url:
+        source_url = explicit_url
+        connector_status = "CONFIGURED"
+    elif profile["base_url"]:
+        source_url = f"{profile['base_url'].rstrip('/')}/{quote(source_table, safe='')}/{quote(source_record_id, safe='')}"
+        connector_status = "CONFIGURED"
+    else:
+        source_url = f"demo://{profile['id']}/{quote(source_table, safe='')}/{quote(source_record_id, safe='')}"
+        connector_status = "DEMO"
+    snapshot = {
+        key: record.get(key, "") for key in (
+            "material_code", "system_source", "material_name", "description", "category", "unit",
+            "create_time", "plant_code",
+        )
+    }
+    snapshot["extra"] = extra
+    record_hash = hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    issues = _record_quality_issues(record, attributes)
+    provenance = {
+        "batch_id": batch_id, "source_system": record.get("system_source") or "CSV导入",
+        "plant_code": _normalize_plant_code(record.get("plant_code")), "source_table": source_table,
+        "source_record_id": source_record_id, "connector_id": profile["id"],
+        "connector_name": profile["label"], "connector_status": connector_status,
+        "source_url": source_url, "filename": filename, "row_number": row_number,
+        "record_hash": record_hash, "imported_at": _utc_now(),
+    }
+    return provenance, issues
 
 
 def map_fields(headers: list[str]) -> dict[str, str]:
@@ -357,6 +464,27 @@ def _migrate_legacy_batches(conn: sqlite3.Connection) -> None:
                 )
 
 
+def _backfill_mapping_record_ids(conn: sqlite3.Connection) -> None:
+    """Link legacy mapping rows to source rows without guessing across batches."""
+    used = {row["record_id"] for row in conn.execute(
+        "SELECT record_id FROM mappings WHERE record_id IS NOT NULL"
+    ).fetchall()}
+    pending = conn.execute(
+        "SELECT * FROM mappings WHERE record_id IS NULL AND batch_id IS NOT NULL ORDER BY id"
+    ).fetchall()
+    for mapping in pending:
+        candidates = conn.execute(
+            """SELECT id FROM records WHERE batch_id = ? AND system_source = ? AND material_code = ?
+               AND plant_code = ? AND material_name = ? ORDER BY id""",
+            (mapping["batch_id"], mapping["system_source"], mapping["original_code"],
+             mapping["plant_code"], mapping["original_name"]),
+        ).fetchall()
+        record_id = next((row["id"] for row in candidates if row["id"] not in used), None)
+        if record_id is not None:
+            conn.execute("UPDATE mappings SET record_id = ? WHERE id = ?", (record_id, mapping["id"]))
+            used.add(record_id)
+
+
 def init_db() -> None:
     with db_connect() as conn:
         conn.executescript(
@@ -433,6 +561,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS mappings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 batch_id TEXT,
+                record_id INTEGER,
                 system_source TEXT,
                 original_code TEXT,
                 original_name TEXT,
@@ -443,6 +572,7 @@ def init_db() -> None:
                 applied_rules TEXT,
                 plant_code TEXT NOT NULL DEFAULT 'GROUP',
                 FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE,
+                FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE SET NULL,
                 FOREIGN KEY (mdm_code) REFERENCES masters(mdm_code)
             );
             CREATE TABLE IF NOT EXISTS reviews (
@@ -510,6 +640,7 @@ def init_db() -> None:
                 message TEXT,
                 plant_code TEXT NOT NULL DEFAULT 'GROUP',
                 instruction TEXT,
+                payload_json TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS vector_embeddings (
@@ -588,7 +719,7 @@ def init_db() -> None:
                 "plant_codes": "TEXT NOT NULL DEFAULT 'GROUP'",
             },
             "batch_masters": {"plant_codes": "TEXT NOT NULL DEFAULT 'GROUP'"},
-            "mappings": {"batch_id": "TEXT", "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'"},
+            "mappings": {"batch_id": "TEXT", "record_id": "INTEGER", "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'"},
             "reviews": {
                 "batch_id": "TEXT", "source_systems": "TEXT", "category": "TEXT",
                 "attributes": "TEXT", "candidates": "TEXT", "approved_action": "TEXT", "approved_at": "TEXT",
@@ -602,7 +733,7 @@ def init_db() -> None:
             },
             "distribution_logs": {
                 "batch_id": "TEXT", "standard_name": "TEXT", "sync_mode": "TEXT", "sync_frequency": "TEXT",
-                "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'", "instruction": "TEXT",
+                "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'", "instruction": "TEXT", "payload_json": "TEXT",
             },
         }.items():
             for column, definition in columns.items():
@@ -614,6 +745,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_batch_masters_batch ON batch_masters(batch_id);
             CREATE INDEX IF NOT EXISTS idx_mappings_batch ON mappings(batch_id);
             CREATE INDEX IF NOT EXISTS idx_mappings_master ON mappings(mdm_code);
+            CREATE INDEX IF NOT EXISTS idx_mappings_record ON mappings(record_id);
             CREATE INDEX IF NOT EXISTS idx_reviews_batch_status ON reviews(batch_id, status);
             CREATE INDEX IF NOT EXISTS idx_distribution_batch ON distribution_logs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_records_plant ON records(batch_id, plant_code);
@@ -632,6 +764,7 @@ def init_db() -> None:
             conn.execute(f"UPDATE {table} SET plant_code = 'GROUP' WHERE plant_code IS NULL OR plant_code = ''")
         for table in ("masters", "batch_masters", "reviews"):
             conn.execute(f"UPDATE {table} SET plant_codes = 'GROUP' WHERE plant_codes IS NULL OR plant_codes = ''")
+        _backfill_mapping_record_ids(conn)
 
         # Product upgrades must make historical batches usable without forcing a CSV re-upload.
         for batch in conn.execute("SELECT batch_id, record_count, filename FROM batches ORDER BY id").fetchall():
@@ -1828,15 +1961,34 @@ def _set_workflow_step(
     if not definition:
         raise ValueError(f"unknown workflow step: {step_code}")
     code, ordinal, name, endpoint = definition
+    normalized_progress = max(0, min(100, int(progress)))
+    normalized_metrics = metrics or {}
+    previous = conn.execute(
+        "SELECT status, progress, metrics FROM workflow_steps WHERE batch_id = ? AND step_code = ?",
+        (batch_id, code),
+    ).fetchone()
     conn.execute(
         """INSERT INTO workflow_steps
            (batch_id, step_code, ordinal, name, status, progress, metrics, action_endpoint, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(batch_id, step_code) DO UPDATE SET status=excluded.status,
             progress=excluded.progress, metrics=excluded.metrics, updated_at=excluded.updated_at""",
-        (batch_id, code, ordinal, name, status, max(0, min(100, int(progress))),
-         json.dumps(metrics or {}, ensure_ascii=False), endpoint, _utc_now()),
+        (batch_id, code, ordinal, name, status, normalized_progress,
+         json.dumps(normalized_metrics, ensure_ascii=False), endpoint, _utc_now()),
     )
+    previous_metrics = json.loads(previous["metrics"] or "{}") if previous else None
+    changed = (
+        not previous or previous["status"] != status or int(previous["progress"] or 0) != normalized_progress
+        or _canonical_json(previous_metrics) != _canonical_json(normalized_metrics)
+    )
+    if changed:
+        _append_audit_block(
+            conn, batch_id, "WORKFLOW_STEP_FINGERPRINT", "WORKFLOW_STEP", code,
+            {
+                "ordinal": ordinal, "name": name, "status": status, "progress": normalized_progress,
+                "metrics": normalized_metrics, "action_endpoint": endpoint,
+            }, actor="治理工作流引擎",
+        )
 
 
 def _initialize_workflow(conn: sqlite3.Connection, batch_id: str) -> None:
@@ -1898,6 +2050,7 @@ def _verify_audit_chain(conn: sqlite3.Connection, batch_id: str) -> dict:
     blocks = _rows(conn, "SELECT * FROM audit_blocks WHERE batch_id = ? ORDER BY height", (batch_id,))
     expected_previous = "0" * 64
     errors = []
+    latest_step_blocks = {}
     for expected_height, block in enumerate(blocks, 1):
         payload_hash = hashlib.sha256((block["payload_json"] or "").encode("utf-8")).hexdigest()
         header = {
@@ -1915,7 +2068,31 @@ def _verify_audit_chain(conn: sqlite3.Connection, batch_id: str) -> dict:
             errors.append({"height": block["height"], "error": "业务载荷哈希不匹配"})
         if calculated_hash != block["block_hash"]:
             errors.append({"height": block["height"], "error": "区块哈希不匹配"})
+        if block["entity_type"] == "WORKFLOW_STEP" and block["event_type"] == "WORKFLOW_STEP_FINGERPRINT":
+            latest_step_blocks[block["entity_id"]] = block
         expected_previous = block["block_hash"]
+    workflow_rows = _rows(
+        conn, "SELECT * FROM workflow_steps WHERE batch_id = ? ORDER BY ordinal", (batch_id,)
+    )
+    for step in workflow_rows:
+        block = latest_step_blocks.get(step["step_code"])
+        if not block:
+            errors.append({"step_code": step["step_code"], "error": "当前工作流步骤缺少审计指纹"})
+            continue
+        expected_payload = {
+            "ordinal": step["ordinal"], "name": step["name"], "status": step["status"],
+            "progress": int(step["progress"] or 0), "metrics": json.loads(step.get("metrics") or "{}"),
+            "action_endpoint": step.get("action_endpoint"),
+        }
+        try:
+            fingerprint_payload = json.loads(block["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            fingerprint_payload = None
+        if fingerprint_payload is None or _canonical_json(fingerprint_payload) != _canonical_json(expected_payload):
+            errors.append({
+                "height": block["height"], "step_code": step["step_code"],
+                "error": "工作流当前状态与最新审计指纹不一致",
+            })
     return {
         "batch_id": batch_id, "valid": not errors, "block_count": len(blocks),
         "latest_hash": expected_previous if blocks else None, "errors": errors,
@@ -2156,6 +2333,26 @@ def _build_governance_graph(
     conn: sqlite3.Connection, batch_id: str, plant_code: str = "GROUP", raw_limit: int = 80
 ) -> tuple[nx.Graph, dict]:
     graph = nx.Graph(batch_id=batch_id)
+    batch = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
+    batch_id_node = f"batch:{batch_id}"
+    graph.add_node(batch_id_node, label=(batch["filename"] if batch else batch_id), node_type="BATCH",
+                   entity_id=batch_id)
+    workflow_rows = _rows(
+        conn, "SELECT * FROM workflow_steps WHERE batch_id = ? ORDER BY ordinal", (batch_id,)
+    )
+    previous_step_id = None
+    for step in workflow_rows:
+        step_id = f"workflow:{step['step_code']}"
+        graph.add_node(
+            step_id, label=f"{step['ordinal']}. {step['name']}", node_type="WORKFLOW_STEP",
+            entity_id=step["step_code"], status=step["status"], progress=int(step["progress"] or 0),
+            action_endpoint=step.get("action_endpoint"), fingerprint_count=0,
+            latest_block_hash="", latest_payload_hash="", latest_fingerprint_height=0,
+        )
+        graph.add_edge(batch_id_node, step_id, relation="CONTAINS_STEP")
+        if previous_step_id:
+            graph.add_edge(previous_step_id, step_id, relation="NEXT_STEP")
+        previous_step_id = step_id
     masters = conn.execute("SELECT * FROM batch_masters WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()
     visible_codes = set()
     for master in masters:
@@ -2169,30 +2366,176 @@ def _build_governance_graph(
             category_id = f"category:{master['category']}"
             graph.add_node(category_id, label=master["category"], node_type="CATEGORY", entity_id=master["category"])
             graph.add_edge(master_id, category_id, relation="CLASSIFIED_AS")
-        for source in filter(None, _clean_value(master["source_systems"]).split(",")):
-            source_id = f"system:{source}"
-            graph.add_node(source_id, label=source, node_type="SYSTEM", entity_id=source)
-            graph.add_edge(master_id, source_id, relation="SOURCED_FROM")
         for plant in filter(None, _clean_value(master["plant_codes"]).split(",")):
             plant = _normalize_plant_code(plant)
+            if plant_code != "GROUP" and plant not in {"GROUP", plant_code}:
+                continue
             plant_id = f"plant:{plant}"
             graph.add_node(plant_id, label=PLANTS.get(plant, plant), node_type="PLANT", entity_id=plant)
             graph.add_edge(master_id, plant_id, relation="AVAILABLE_TO")
-    mappings = conn.execute(
-        "SELECT * FROM mappings WHERE batch_id = ? ORDER BY id LIMIT ?", (batch_id, max(0, raw_limit))
-    ).fetchall()
+    record_rows = _rows(conn, "SELECT * FROM records WHERE batch_id = ? ORDER BY id", (batch_id,))
+    record_by_id = {row["id"]: row for row in record_rows}
+    legacy_record_lookup = {}
+    for row in record_rows:
+        key = (_clean_value(row.get("system_source")), _clean_value(row.get("material_code")),
+               _normalize_plant_code(row.get("plant_code")), _clean_value(row.get("material_name")))
+        legacy_record_lookup.setdefault(key, []).append(row)
+    mappings = _rows(
+        conn, "SELECT * FROM mappings WHERE batch_id = ? ORDER BY id LIMIT ?", (batch_id, max(0, raw_limit))
+    )
     for mapping in mappings:
         if mapping["mdm_code"] not in visible_codes:
             continue
-        raw_id = f"raw:{mapping['id']}"
-        graph.add_node(raw_id, label=mapping["original_name"] or mapping["original_code"] or raw_id,
-                       node_type="RAW", entity_id=mapping["original_code"])
+        if plant_code != "GROUP" and not _plant_visible(mapping.get("plant_code"), plant_code):
+            continue
+        record = record_by_id.get(mapping.get("record_id"))
+        if not record:
+            key = (_clean_value(mapping.get("system_source")), _clean_value(mapping.get("original_code")),
+                   _normalize_plant_code(mapping.get("plant_code")), _clean_value(mapping.get("original_name")))
+            candidates = legacy_record_lookup.get(key) or []
+            record = candidates[0] if candidates else None
+        attributes = json.loads((record or {}).get("ext") or "{}")
+        provenance = attributes.get("_provenance") if isinstance(attributes.get("_provenance"), dict) else {}
+        if record and not provenance:
+            provenance, fallback_issues = _build_source_provenance(
+                record, attributes, batch_id, batch["filename"] if batch else "历史批次", int(record.get("id") or 0)
+            )
+            attributes["_quality_issues"] = fallback_issues
+        record_db_id = (record or {}).get("id")
+        raw_id = f"record:{record_db_id}" if record_db_id else f"raw:{mapping['id']}"
+        graph.add_node(
+            raw_id, label=mapping["original_name"] or mapping["original_code"] or raw_id,
+            node_type="RAW", entity_id=provenance.get("source_record_id") or mapping["original_code"],
+            record_id=record_db_id, material_code=mapping["original_code"],
+            source_system=mapping["system_source"], plant_code=mapping["plant_code"],
+            source_table=provenance.get("source_table", ""), source_url=provenance.get("source_url", ""),
+            connector_status=provenance.get("connector_status", "DEMO"),
+            record_hash=provenance.get("record_hash", ""),
+        )
+        graph.add_edge(batch_id_node, raw_id, relation="INGESTED_RECORD")
+        source = mapping.get("system_source") or "CSV导入"
+        source_id = f"system:{source}"
+        profile = _connector_profile(source)
+        graph.add_node(source_id, label=source, node_type="SYSTEM", entity_id=source,
+                       connector_id=profile["id"], connector_name=profile["label"],
+                       connector_status="CONFIGURED" if profile["base_url"] else "DEMO")
+        graph.add_edge(source_id, raw_id, relation="PROVIDES_RECORD")
+        source_plant = _normalize_plant_code(mapping.get("plant_code"))
+        source_plant_id = f"plant:{source_plant}"
+        graph.add_node(source_plant_id, label=PLANTS.get(source_plant, source_plant), node_type="PLANT",
+                       entity_id=source_plant)
+        graph.add_edge(raw_id, source_plant_id, relation="OWNED_BY")
         graph.add_edge(raw_id, f"master:{mapping['mdm_code']}", relation="MAPPED_TO",
                        similarity=round(float(mapping["similarity"] or 0), 4))
+        issues = list(attributes.get("_quality_issues") or [])
+        if mapping.get("decision") == "REVIEW" and not any(item.get("code") == "REVIEW_REQUIRED" for item in issues):
+            issues.append({"code": "REVIEW_REQUIRED", "field": "semantic_match", "severity": "HIGH",
+                           "message": "存在冲突或低置信度匹配，需人工审核"})
+        for issue_index, issue in enumerate(issues):
+            issue_id = f"issue:{mapping['id']}:{issue.get('code') or issue_index}"
+            graph.add_node(issue_id, label=issue.get("message") or issue.get("code") or "数据质量问题",
+                           node_type="ISSUE", entity_id=issue.get("code") or str(issue_index),
+                           field=issue.get("field"), severity=issue.get("severity", "MEDIUM"))
+            graph.add_edge(raw_id, issue_id, relation="HAS_QUALITY_ISSUE")
+
+    reviews = _rows(conn, "SELECT * FROM reviews WHERE batch_id = ? AND status = 'REVIEW' ORDER BY id", (batch_id,))
+    if plant_code != "GROUP":
+        reviews = [item for item in reviews if _plant_visible(item.get("plant_codes"), plant_code)]
+    for review in reviews:
+        master_id = f"master:{review['mdm_code']}"
+        if master_id not in graph:
+            continue
+        review_id = f"review:{review['id']}"
+        graph.add_node(review_id, label=review.get("reason") or "人工审核", node_type="REVIEW",
+                       entity_id=str(review["id"]), status=review.get("status"), confidence=review.get("confidence"))
+        graph.add_edge(master_id, review_id, relation="REQUIRES_REVIEW")
+
+    if plant_code == "GROUP":
+        distributions = _rows(conn, "SELECT * FROM distribution_logs WHERE batch_id = ? ORDER BY id", (batch_id,))
+    else:
+        distributions = _rows(
+            conn, "SELECT * FROM distribution_logs WHERE batch_id = ? AND plant_code = ? ORDER BY id",
+            (batch_id, plant_code),
+        )
+    for item in distributions:
+        master_id = f"master:{item['mdm_code']}"
+        if master_id not in graph:
+            continue
+        target_id = f"target:{item['target_system']}:{item['plant_code']}"
+        graph.add_node(target_id, label=f"{item['target_system']} · {PLANTS.get(item['plant_code'], item['plant_code'])}",
+                       node_type="TARGET_SYSTEM", entity_id=item["target_system"], status=item.get("status"),
+                       plant_code=item.get("plant_code"))
+        graph.add_edge(master_id, target_id, relation="DISTRIBUTED_TO", status=item.get("status"))
+        plant_id = f"plant:{item['plant_code']}"
+        graph.add_node(plant_id, label=PLANTS.get(item["plant_code"], item["plant_code"]), node_type="PLANT",
+                       entity_id=item["plant_code"])
+        graph.add_edge(target_id, plant_id, relation="DELIVERED_TO")
+
+    if plant_code == "GROUP":
+        feedback_rows = _rows(conn, "SELECT * FROM plant_feedback WHERE batch_id = ? ORDER BY id", (batch_id,))
+    else:
+        feedback_rows = _rows(
+            conn, "SELECT * FROM plant_feedback WHERE batch_id = ? AND plant_code = ? ORDER BY id",
+            (batch_id, plant_code),
+        )
+    for item in feedback_rows:
+        master_id = f"master:{item['mdm_code']}"
+        if master_id not in graph:
+            continue
+        feedback_id = f"feedback:{item['id']}"
+        graph.add_node(feedback_id, label=f"{PLANTS.get(item['plant_code'], item['plant_code'])}反馈",
+                       node_type="FEEDBACK", entity_id=str(item["id"]), accepted=bool(item.get("accepted")),
+                       rating=item.get("rating"), comment=item.get("comment"))
+        graph.add_edge(master_id, feedback_id, relation="VALIDATED_BY")
+        plant_id = f"plant:{item['plant_code']}"
+        graph.add_node(plant_id, label=PLANTS.get(item["plant_code"], item["plant_code"]), node_type="PLANT",
+                       entity_id=item["plant_code"])
+        graph.add_edge(feedback_id, plant_id, relation="SUBMITTED_BY")
+
+    audit_verification = _verify_audit_chain(conn, batch_id)
+    audit_rows = _rows(conn, "SELECT * FROM audit_blocks WHERE batch_id = ? ORDER BY height", (batch_id,))
+    previous_audit_id = None
+    for block in audit_rows:
+        audit_id = f"audit:{block['height']}"
+        graph.add_node(audit_id, label=f"#{block['height']} {block['event_type']}", node_type="AUDIT",
+                       entity_id=str(block["height"]), block_hash=block.get("block_hash"),
+                       payload_hash=block.get("payload_hash"), previous_hash=block.get("previous_hash"),
+                       merkle_root=block.get("merkle_root"), created_at=block.get("created_at"),
+                       verified=bool(audit_verification["valid"]))
+        if previous_audit_id:
+            graph.add_edge(previous_audit_id, audit_id, relation="PREVIOUS_HASH")
+        previous_audit_id = audit_id
+        entity_type = _clean_value(block.get("entity_type")).upper()
+        entity_id = _clean_value(block.get("entity_id"))
+        if entity_type == "BATCH":
+            entity_node = batch_id_node
+        elif entity_type == "MASTER":
+            entity_node = f"master:{entity_id}"
+        elif entity_type == "DISTRIBUTION" and entity_id in PLANTS:
+            if plant_code != "GROUP" and entity_id != plant_code:
+                continue
+            entity_node = f"plant:{entity_id}"
+        elif entity_type == "WORKFLOW_STEP":
+            entity_node = f"workflow:{entity_id}"
+        else:
+            entity_node = f"entity:{entity_type}:{entity_id}"
+            if entity_node not in graph:
+                graph.add_node(entity_node, label=f"{entity_type} · {entity_id}", node_type="ENTITY", entity_id=entity_id)
+        if entity_node in graph:
+            graph.add_edge(audit_id, entity_node, relation="FINGERPRINTS")
+            if entity_type == "WORKFLOW_STEP":
+                step_node = graph.nodes[entity_node]
+                step_node["fingerprint_count"] = int(step_node.get("fingerprint_count") or 0) + 1
+                step_node["latest_block_hash"] = block.get("block_hash") or ""
+                step_node["latest_payload_hash"] = block.get("payload_hash") or ""
+                step_node["latest_fingerprint_height"] = int(block.get("height") or 0)
+                step_node["fingerprint_created_at"] = block.get("created_at") or ""
+                step_node["chain_valid"] = bool(audit_verification["valid"])
     stats = {
         "nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(),
         "connected_components": nx.number_connected_components(graph) if graph.number_of_nodes() else 0,
         "types": {},
+        "audit": audit_verification,
     }
     for _node, data in graph.nodes(data=True):
         stats["types"][data["node_type"]] = stats["types"].get(data["node_type"], 0) + 1
@@ -2249,9 +2592,54 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
     masters, reviews, mappings, semantic_meta = engine.govern(records, semantic_engine, preferred_model)
     plant_codes = sorted({_normalize_plant_code(record.get("plant_code")) for record in records})
     batch_plant = plant_codes[0] if len(plant_codes) == 1 else "MULTI"
-    record_attributes = [engine.enrich(record)["_ext"] for record in records]
+    mapping_meta = {}
+    for item in mappings:
+        key = (
+            _clean_value(item.get("system_source")), _clean_value(item.get("original_code")),
+            _normalize_plant_code(item.get("plant_code")), _clean_value(item.get("original_name")),
+        )
+        mapping_meta.setdefault(key, []).append(item)
+    record_attributes = []
+    source_issues = []
+    for index, record in enumerate(records, start=1):
+        attributes = dict(engine.enrich(record)["_ext"])
+        provenance, issues = _build_source_provenance(record, attributes, batch_id, filename or "uploaded.csv", index)
+        key = (
+            _clean_value(record.get("system_source")), _clean_value(record.get("material_code")),
+            _normalize_plant_code(record.get("plant_code")), _clean_value(record.get("material_name")),
+        )
+        decision_rows = mapping_meta.get(key) or []
+        if decision_rows:
+            decision = decision_rows[0]
+            if decision.get("decision") == "REVIEW":
+                issues.append({"code": "REVIEW_REQUIRED", "field": "semantic_match", "label": "语义匹配",
+                               "severity": "HIGH", "message": "存在冲突或低置信度匹配，需人工审核"})
+            similarity = float(decision.get("similarity") or 0)
+            if similarity < engine.SIMILARITY_THRESHOLD:
+                issues.append({"code": "LOW_SIMILARITY", "field": "semantic_match", "label": "语义相似度",
+                               "severity": "MEDIUM", "message": f"相似度 {similarity:.2%} 低于治理阈值"})
+        attributes["_provenance"] = provenance
+        attributes["_quality_issues"] = issues
+        record_attributes.append(attributes)
+        for issue in issues:
+            source_issues.append({
+                **issue, "material_code": record.get("material_code"), "material_name": record.get("material_name"),
+                "system_source": record.get("system_source"), "plant_code": record.get("plant_code"),
+                "source_record_id": provenance["source_record_id"], "source_table": provenance["source_table"],
+                "connector_status": provenance["connector_status"], "source_url": provenance["source_url"],
+                "record_hash": provenance["record_hash"],
+            })
     anomaly_count = sum(master.get("anomaly_count", 0) for master in masters)
     quality_report = analyze_quality(records, anomaly_count)
+    source_hashes = sorted(item["_provenance"]["record_hash"] for item in record_attributes)
+    source_fingerprint_root = hashlib.sha256("".join(source_hashes).encode("ascii")).hexdigest()
+    quality_report["source_issues"] = source_issues
+    quality_report["lineage"] = {
+        "traceable_records": len(record_attributes),
+        "problem_records": len({(item["system_source"], item["source_record_id"]) for item in source_issues}),
+        "source_systems": sorted({record.get("system_source") or "CSV导入" for record in records}),
+        "source_fingerprint_root": source_fingerprint_root,
+    }
     with db_connect() as conn:
         conn.execute(
             """INSERT INTO batches
@@ -2261,15 +2649,24 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
             (batch_id, filename or "uploaded.csv", created_at, encoding or "utf-8", len(records), batch_plant,
              semantic_meta["method"], semantic_meta["model"], semantic_meta["dimension"], semantic_meta["warning"]),
         )
-        conn.executemany(
-            """INSERT INTO records
-               (batch_id, material_code, system_source, material_name, description, category, unit, create_time, plant_code, ext)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(batch_id, record["material_code"], record["system_source"], record["material_name"], record["description"],
-              record["category"], record["unit"], record["create_time"], record["plant_code"],
-              json.dumps(attributes, ensure_ascii=False))
-             for record, attributes in zip(records, record_attributes)],
-        )
+        record_ids = []
+        record_lookup = {}
+        for record, attributes in zip(records, record_attributes):
+            cursor = conn.execute(
+                """INSERT INTO records
+                   (batch_id, material_code, system_source, material_name, description, category, unit, create_time, plant_code, ext)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (batch_id, record["material_code"], record["system_source"], record["material_name"], record["description"],
+                 record["category"], record["unit"], record["create_time"], record["plant_code"],
+                 json.dumps(attributes, ensure_ascii=False)),
+            )
+            record_id = cursor.lastrowid
+            record_ids.append(record_id)
+            key = (
+                _clean_value(record.get("system_source")), _clean_value(record.get("material_code")),
+                _normalize_plant_code(record.get("plant_code")), _clean_value(record.get("material_name")),
+            )
+            record_lookup.setdefault(key, []).append(record_id)
         for master in masters:
             conn.execute(
                 """INSERT INTO masters
@@ -2297,15 +2694,26 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
                  master["source_systems"], master["decision"], master["confidence"], master["code_prefix"],
                  master["anomaly_count"], master["source_records"], master["plant_codes"]),
             )
-        conn.executemany(
-            """INSERT INTO mappings
-               (batch_id, system_source, original_code, original_name, mdm_code, standard_name, decision,
-                similarity, applied_rules, plant_code)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(batch_id, item["system_source"], item["original_code"], item["original_name"], item["mdm_code"],
-              item["standard_name"], item["decision"], item["similarity"], item["applied_rules"], item["plant_code"])
-             for item in mappings],
-        )
+        used_record_ids = set()
+        for item in mappings:
+            key = (
+                _clean_value(item.get("system_source")), _clean_value(item.get("original_code")),
+                _normalize_plant_code(item.get("plant_code")), _clean_value(item.get("original_name")),
+            )
+            candidates = record_lookup.get(key) or []
+            record_id = candidates.pop(0) if candidates else next(
+                (candidate for candidate in record_ids if candidate not in used_record_ids), None
+            )
+            if record_id is not None:
+                used_record_ids.add(record_id)
+            conn.execute(
+                """INSERT INTO mappings
+                   (batch_id, record_id, system_source, original_code, original_name, mdm_code, standard_name, decision,
+                    similarity, applied_rules, plant_code)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (batch_id, record_id, item["system_source"], item["original_code"], item["original_name"], item["mdm_code"],
+                 item["standard_name"], item["decision"], item["similarity"], item["applied_rules"], item["plant_code"]),
+            )
         for review in reviews:
             cursor = conn.execute(
                 """INSERT INTO reviews
@@ -2350,6 +2758,7 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
             "filename": filename, "record_count": len(records), "golden_master_count": len(masters),
             "review_count": len(reviews), "quality_score": quality_report.get("overall", {}).get("score", 0),
             "vector_index": vector_meta, "graph": graph_meta,
+            "source_fingerprint_root": source_fingerprint_root, "source_record_count": len(source_hashes),
         })
     return get_batch_state(batch_id)
 
@@ -2397,8 +2806,15 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
         records = list(all_records)
         if requested_plant and requested_plant != "GROUP":
             records = [item for item in records if _plant_visible(item.get("plant_code"), requested_plant)]
-        for record in records:
-            record["_ext"] = json.loads(record.pop("ext") or "{}")
+        for row_number, record in enumerate(records, start=1):
+            attributes = json.loads(record.pop("ext") or "{}")
+            if not isinstance(attributes.get("_provenance"), dict):
+                provenance, issues = _build_source_provenance(
+                    record, attributes, batch_id, batch_row["filename"], row_number
+                )
+                attributes["_provenance"] = provenance
+                attributes["_quality_issues"] = issues
+            record["_ext"] = attributes
         mappings = _rows(conn, "SELECT * FROM mappings WHERE batch_id = ? ORDER BY id", (batch_id,))
         if requested_plant and requested_plant != "GROUP":
             mappings = [item for item in mappings if _plant_visible(item.get("plant_code"), requested_plant)]
@@ -2431,6 +2847,28 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
                 "UPDATE quality_reports SET report = ?, generated_at = ? WHERE batch_id = ?",
                 (json.dumps(quality, ensure_ascii=False), _utc_now(), batch_id),
             )
+        if quality is not None and "source_issues" not in quality:
+            quality["source_issues"] = [
+                {
+                    **issue, "record_id": record.get("id"), "material_code": record.get("material_code"),
+                    "material_name": record.get("material_name"), "system_source": record.get("system_source"),
+                    "plant_code": record.get("plant_code"),
+                    **{key: record.get("_ext", {}).get("_provenance", {}).get(key) for key in (
+                        "source_record_id", "source_table", "connector_status", "source_url", "record_hash"
+                    )},
+                }
+                for record in records for issue in record.get("_ext", {}).get("_quality_issues", [])
+            ]
+            fingerprints = sorted(
+                record.get("_ext", {}).get("_provenance", {}).get("record_hash", "") for record in records
+                if record.get("_ext", {}).get("_provenance", {}).get("record_hash")
+            )
+            quality["lineage"] = {
+                "traceable_records": len(records),
+                "problem_records": len({(item.get("system_source"), item.get("source_record_id")) for item in quality["source_issues"]}),
+                "source_systems": sorted({record.get("system_source") or "CSV导入" for record in records}),
+                "source_fingerprint_root": hashlib.sha256("".join(fingerprints).encode("ascii")).hexdigest() if fingerprints else "",
+            }
         lifecycle = _rows(conn, "SELECT * FROM lifecycle WHERE batch_id = ? ORDER BY id DESC", (batch_id,))
         if requested_plant and requested_plant != "GROUP":
             lifecycle = [item for item in lifecycle if _plant_visible(item.get("plant_code"), requested_plant)]
@@ -2451,6 +2889,8 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
             "compression_rate": round((1 - master_count / record_count) * 100, 1) if record_count else 0.0,
         }
         distribution_logs = _rows(conn, "SELECT * FROM distribution_logs WHERE batch_id = ? ORDER BY id DESC", (batch_id,))
+        for item in distribution_logs:
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
         if requested_plant and requested_plant != "GROUP":
             distribution_logs = [item for item in distribution_logs if _plant_visible(item.get("plant_code"), requested_plant)]
         batch = dict(batch_row)
@@ -2523,7 +2963,8 @@ def health_check():
             "llm_agent": bool(qwen_agent.api_key), "vector_store": True, "knowledge_graph": True,
             "audit_blockchain": False, "tamper_evident_audit_chain": True,
             "closed_loop_workflow": True, "real_ocr": ocr_engine.status(),
-            "ground_truth_evaluation": GROUND_TRUTH_PATH.exists(), "explainable_governance": True,
+            "source_lineage": True, "governance_reports": True,
+            "natural_language_distribution": True, "explainable_governance": True,
             "standard_rag": {"namespace": "standard_kb", "count": standard_kb_count},
         },
         "trace_id": g.trace_id,
@@ -2961,20 +3402,260 @@ def governance_graph():
                         "stats": stats, "engine": "NetworkX"})
 
 
+def _source_record_context(
+    conn: sqlite3.Connection, record: dict, batch: dict, requested_plant: str = "GROUP"
+) -> dict:
+    if requested_plant != "GROUP" and not _plant_visible(record.get("plant_code"), requested_plant):
+        raise PermissionError("source record is outside the current factory scope")
+    attributes = json.loads(record.get("ext") or "{}")
+    provenance = attributes.get("_provenance") if isinstance(attributes.get("_provenance"), dict) else None
+    if not provenance:
+        provenance, issues = _build_source_provenance(
+            record, attributes, record["batch_id"], batch.get("filename") or "历史批次", int(record["id"])
+        )
+        attributes["_provenance"] = provenance
+        attributes["_quality_issues"] = issues
+    issues = list(attributes.get("_quality_issues") or _record_quality_issues(record, attributes))
+    mappings = _rows(
+        conn, "SELECT * FROM mappings WHERE batch_id = ? AND record_id = ? ORDER BY id",
+        (record["batch_id"], record["id"]),
+    )
+    if not mappings:
+        mappings = _rows(
+            conn,
+            """SELECT * FROM mappings WHERE batch_id = ? AND system_source = ? AND original_code = ?
+               AND original_name = ? ORDER BY id""",
+            (record["batch_id"], record.get("system_source"), record.get("material_code"), record.get("material_name")),
+        )
+    mdm_codes = list(dict.fromkeys(item["mdm_code"] for item in mappings if item.get("mdm_code")))
+    masters, reviews, distributions, feedback = [], [], [], []
+    if mdm_codes:
+        placeholders = ",".join("?" for _ in mdm_codes)
+        masters = _rows(
+            conn, f"SELECT * FROM batch_masters WHERE batch_id = ? AND mdm_code IN ({placeholders})",
+            [record["batch_id"], *mdm_codes],
+        )
+        reviews = _rows(
+            conn, f"SELECT * FROM reviews WHERE batch_id = ? AND mdm_code IN ({placeholders}) ORDER BY id",
+            [record["batch_id"], *mdm_codes],
+        )
+        if requested_plant != "GROUP":
+            masters = [item for item in masters if _plant_visible(item.get("plant_codes"), requested_plant)]
+            reviews = [item for item in reviews if _plant_visible(item.get("plant_codes"), requested_plant)]
+            distributions = _rows(
+                conn, f"""SELECT * FROM distribution_logs WHERE batch_id = ? AND mdm_code IN ({placeholders})
+                           AND plant_code = ? ORDER BY id""",
+                [record["batch_id"], *mdm_codes, requested_plant],
+            )
+            feedback = _rows(
+                conn, f"""SELECT * FROM plant_feedback WHERE batch_id = ? AND mdm_code IN ({placeholders})
+                           AND plant_code = ? ORDER BY id""",
+                [record["batch_id"], *mdm_codes, requested_plant],
+            )
+        else:
+            distributions = _rows(
+                conn, f"""SELECT * FROM distribution_logs WHERE batch_id = ? AND mdm_code IN ({placeholders})
+                           ORDER BY id""", [record["batch_id"], *mdm_codes],
+            )
+            feedback = _rows(
+                conn, f"""SELECT * FROM plant_feedback WHERE batch_id = ? AND mdm_code IN ({placeholders})
+                           ORDER BY id""", [record["batch_id"], *mdm_codes],
+            )
+    for item in distributions:
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+    if requested_plant == "GROUP":
+        audit_proofs = _rows(
+            conn,
+            """SELECT height, event_type, entity_type, entity_id, actor, payload_hash, previous_hash,
+                      merkle_root, block_hash, created_at
+               FROM audit_blocks WHERE batch_id = ? AND
+               (entity_type IN ('BATCH', 'WORKFLOW_STEP') OR entity_id IN ({codes})) ORDER BY height""".format(
+                codes=",".join("?" for _ in mdm_codes) or "NULL"
+            ),
+            [record["batch_id"], *mdm_codes],
+        )
+    else:
+        audit_proofs = _rows(
+            conn,
+            """SELECT height, event_type, entity_type, entity_id, actor, payload_hash, previous_hash,
+                      merkle_root, block_hash, created_at
+               FROM audit_blocks WHERE batch_id = ? AND
+               (entity_type IN ('BATCH', 'WORKFLOW_STEP') OR
+                (entity_type = 'DISTRIBUTION' AND entity_id = ?)) ORDER BY height""",
+            (record["batch_id"], requested_plant),
+        )
+    route = [
+        {"type": "SYSTEM", "id": provenance["source_system"], "label": provenance["source_system"]},
+        {"type": "SOURCE_RECORD", "id": provenance["source_record_id"], "label": record.get("material_name")},
+        *[{"type": "MASTER", "id": item["mdm_code"], "label": item.get("standard_name")} for item in masters],
+    ]
+    route.extend({
+        "type": "TARGET_SYSTEM", "id": item["target_system"],
+        "label": f"{item['target_system']} · {PLANTS.get(item['plant_code'], item['plant_code'])}",
+    } for item in distributions if item.get("status") == "SUCCESS")
+    return {
+        "record": {key: record.get(key) for key in (
+            "id", "batch_id", "material_code", "system_source", "material_name", "description",
+            "category", "unit", "create_time", "plant_code", "created_at",
+        )},
+        "attributes": {key: value for key, value in attributes.items() if not key.startswith("_")},
+        "provenance": provenance, "quality_issues": issues, "mappings": mappings,
+        "masters": masters, "reviews": reviews, "distributions": distributions, "feedback": feedback,
+        "audit_proofs": audit_proofs, "route": route,
+        "fingerprint": {
+            "algorithm": "SHA-256", "record_hash": provenance["record_hash"],
+            "chain_valid": _verify_audit_chain(conn, record["batch_id"])["valid"],
+        },
+    }
+
+
+@app.get("/api/lineage/source/<int:record_id>")
+def source_record_lineage(record_id: int):
+    requested_plant = _normalize_plant_code(request.args.get("plant_code"))
+    with db_connect() as conn:
+        row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "source record not found"}), 404
+        record = dict(row)
+        batch_row = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (record["batch_id"],)).fetchone()
+        try:
+            context = _source_record_context(conn, record, dict(batch_row), requested_plant)
+        except PermissionError as exc:
+            return jsonify({"error": str(exc)}), 403
+        return jsonify({**context, "trace_id": g.trace_id})
+
+
 @app.get("/api/graph/lineage/<mdm_code>")
 def graph_lineage(mdm_code: str):
     with db_connect() as conn:
         batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
         if not batch_id:
             return jsonify({"error": "no governed batch is available"}), 400
-        graph, _stats = _build_governance_graph(conn, batch_id, _normalize_plant_code(request.args.get("plant_code")), 300)
+        requested_plant = _normalize_plant_code(request.args.get("plant_code"))
+        graph, _stats = _build_governance_graph(conn, batch_id, requested_plant, 300)
         node_id = f"master:{mdm_code}"
         if node_id not in graph:
             return jsonify({"error": "master not found in graph"}), 404
         neighbors = [{"id": neighbor, **graph.nodes[neighbor], "relation": graph.edges[node_id, neighbor]["relation"]}
                      for neighbor in graph.neighbors(node_id)]
-        return jsonify({"batch_id": batch_id, "mdm_code": mdm_code, "neighbors": neighbors,
-                        "degree": graph.degree(node_id), "trace_id": g.trace_id})
+        batch_row = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        mapping_rows = _rows(
+            conn, "SELECT * FROM mappings WHERE batch_id = ? AND mdm_code = ? ORDER BY id", (batch_id, mdm_code)
+        )
+        source_records = []
+        seen_record_ids = set()
+        for mapping in mapping_rows:
+            record = None
+            if mapping.get("record_id"):
+                record = conn.execute("SELECT * FROM records WHERE id = ?", (mapping["record_id"],)).fetchone()
+            if not record:
+                record = conn.execute(
+                    """SELECT * FROM records WHERE batch_id = ? AND system_source = ? AND material_code = ?
+                       AND material_name = ? ORDER BY id LIMIT 1""",
+                    (batch_id, mapping.get("system_source"), mapping.get("original_code"), mapping.get("original_name")),
+                ).fetchone()
+            if record and record["id"] not in seen_record_ids:
+                try:
+                    source_records.append(_source_record_context(
+                        conn, dict(record), dict(batch_row), requested_plant
+                    ))
+                    seen_record_ids.add(record["id"])
+                except PermissionError:
+                    continue
+        if requested_plant == "GROUP":
+            downstream = _rows(
+                conn, "SELECT * FROM distribution_logs WHERE batch_id = ? AND mdm_code = ? ORDER BY id",
+                (batch_id, mdm_code),
+            )
+        else:
+            downstream = _rows(
+                conn,
+                """SELECT * FROM distribution_logs
+                   WHERE batch_id = ? AND mdm_code = ? AND plant_code = ? ORDER BY id""",
+                (batch_id, mdm_code, requested_plant),
+            )
+        for item in downstream:
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        if requested_plant == "GROUP":
+            audit_proofs = _rows(
+                conn,
+                """SELECT height, event_type, entity_type, entity_id, actor, payload_hash, previous_hash,
+                          merkle_root, block_hash, created_at
+                   FROM audit_blocks WHERE batch_id = ? AND
+                   (entity_type IN ('BATCH', 'WORKFLOW_STEP') OR entity_id = ?) ORDER BY height""",
+                (batch_id, mdm_code),
+            )
+        else:
+            audit_proofs = _rows(
+                conn,
+                """SELECT height, event_type, entity_type, entity_id, actor, payload_hash, previous_hash,
+                          merkle_root, block_hash, created_at
+                   FROM audit_blocks WHERE batch_id = ? AND
+                   (entity_type IN ('BATCH', 'WORKFLOW_STEP') OR
+                    (entity_type = 'DISTRIBUTION' AND entity_id = ?)) ORDER BY height""",
+                (batch_id, requested_plant),
+            )
+        return jsonify({
+            "batch_id": batch_id, "mdm_code": mdm_code, "neighbors": neighbors,
+            "degree": graph.degree(node_id), "source_records": source_records,
+            "downstream": downstream, "audit_proofs": audit_proofs,
+            "audit_verification": _verify_audit_chain(conn, batch_id), "trace_id": g.trace_id,
+        })
+
+
+@app.get("/api/connectors")
+def connector_registry():
+    connectors = []
+    for key, config in SOURCE_CONNECTORS.items():
+        configured = bool(os.environ.get(config.get("env") or "", "")) if config.get("env") else True
+        connectors.append({
+            "system": key, "connector_id": config["id"], "name": config["label"],
+            "source_object": config["table"], "configured": configured,
+            "status": "CONNECTED" if configured else "DEMO_ADAPTER",
+        })
+    return jsonify({"connectors": connectors, "trace_id": g.trace_id})
+
+
+@app.get("/api/reports/governance")
+def governance_report():
+    state = get_batch_state(request.args.get("batch_id"), request.args.get("plant_code"))
+    if not state.get("batch"):
+        return jsonify({"error": "no governed batch is available"}), 400
+    batch = state["batch"]
+    issue_rows = []
+    for record in state["records"]:
+        provenance = record.get("_ext", {}).get("_provenance", {})
+        for issue in record.get("_ext", {}).get("_quality_issues", []):
+            issue_rows.append({
+                "record_id": record["id"], "source_system": record.get("system_source"),
+                "source_table": provenance.get("source_table"),
+                "source_record_id": provenance.get("source_record_id"), "record_hash": provenance.get("record_hash"),
+                **issue,
+            })
+    connector_status = {}
+    for source in sorted({_clean_value(item.get("system_source")) or "CSV" for item in state["records"]}):
+        profile = _connector_profile(source)
+        connector_status[source] = {
+            "connector_id": profile["id"], "name": profile["label"],
+            "source_object": profile["table"], "configured": bool(profile["base_url"]),
+        }
+    report = {
+        "report_id": f"GOV-{batch['batch_id']}", "generated_at": _utc_now(),
+        "batch": {key: batch.get(key) for key in ("batch_id", "filename", "record_count", "created_at", "plant_code")},
+        "summary": state["summary"], "quality": state["quality_report"],
+        "source_issue_count": len(issue_rows), "source_issues": issue_rows,
+        "source_connectors": connector_status, "workflow": state["workflow"],
+        "distribution_summary": {
+            "total": len(state["distribution_logs"]),
+            "success": sum(item.get("status") == "SUCCESS" for item in state["distribution_logs"]),
+            "feedback": len(state["feedback"]),
+        },
+        "audit": state["audit_chain"],
+    }
+    stable_report = {key: value for key, value in report.items() if key != "generated_at"}
+    report["report_hash"] = hashlib.sha256(_canonical_json(stable_report).encode("utf-8")).hexdigest()
+    report["hash_scope"] = "报告业务内容（不含生成时间与请求追踪号）"
+    return jsonify({**report, "trace_id": g.trace_id})
 
 
 @app.get("/api/blockchain/blocks")
@@ -3083,150 +3764,6 @@ def api_ocr():
     })
 
 
-def _load_ground_truth() -> tuple[list[dict], list[dict], str]:
-    if not GROUND_TRUTH_PATH.exists() or not GROUND_TRUTH_SOURCE.exists():
-        raise FileNotFoundError("50条真值集或来源数据文件不存在")
-    truth_frame = pd.read_csv(GROUND_TRUTH_PATH, encoding="utf-8-sig", dtype=str).fillna("")
-    required = {"record_id", "truth_group"}
-    if not required.issubset(truth_frame.columns):
-        raise ValueError("ground truth requires record_id and truth_group columns")
-    source_raw = GROUND_TRUTH_SOURCE.read_bytes()
-    source_encoding = (chardet.detect(source_raw).get("encoding") or "utf-8").lower()
-    source_frame = pd.read_csv(io.BytesIO(source_raw), encoding=source_encoding, dtype=str).fillna("")
-    mapping = map_fields(source_frame.columns.tolist())
-    code_column = mapping.get("material_code")
-    if not code_column:
-        raise ValueError("ground truth source has no recognizable material code column")
-    source_rows = {str(row[code_column]).strip(): row.to_dict() for _, row in source_frame.iterrows()}
-    labels = [{"record_id": _clean_value(row["record_id"]), "truth_group": _clean_value(row["truth_group"])}
-              for _, row in truth_frame.iterrows()]
-    missing = [item["record_id"] for item in labels if item["record_id"] not in source_rows]
-    if missing:
-        raise ValueError(f"ground truth records missing from source: {', '.join(missing[:5])}")
-    records = normalize_records([source_rows[item["record_id"]] for item in labels], explicit_mapping=mapping)
-    dataset_hash = hashlib.sha256(GROUND_TRUTH_PATH.read_bytes() + source_raw).hexdigest()
-    return records, labels, dataset_hash
-
-
-def _cluster_metrics(labels: list[dict], predicted: dict[str, str]) -> dict:
-    truth = {item["record_id"]: item["truth_group"] for item in labels if item.get("record_id") and item.get("truth_group")}
-    ids = [record_id for record_id in truth if record_id in predicted]
-    tp = fp = fn = 0
-    false_positives, false_negatives = [], []
-    for left_index, left in enumerate(ids):
-        for right in ids[left_index + 1:]:
-            truth_same = truth[left] == truth[right]
-            predicted_same = predicted[left] == predicted[right]
-            if truth_same and predicted_same:
-                tp += 1
-            elif predicted_same:
-                fp += 1
-                if len(false_positives) < 10:
-                    false_positives.append([left, right])
-            elif truth_same:
-                fn += 1
-                if len(false_negatives) < 10:
-                    false_negatives.append([left, right])
-    precision = tp / (tp + fp) if tp + fp else 1.0
-    recall = tp / (tp + fn) if tp + fn else 1.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    truth_clusters: dict[str, set[str]] = {}
-    predicted_clusters: dict[str, set[str]] = {}
-    for record_id in ids:
-        truth_clusters.setdefault(truth[record_id], set()).add(record_id)
-        predicted_clusters.setdefault(predicted[record_id], set()).add(record_id)
-    b3_precision = b3_recall = 0.0
-    for record_id in ids:
-        intersection = truth_clusters[truth[record_id]] & predicted_clusters[predicted[record_id]]
-        b3_precision += len(intersection) / len(predicted_clusters[predicted[record_id]])
-        b3_recall += len(intersection) / len(truth_clusters[truth[record_id]])
-    if ids:
-        b3_precision /= len(ids)
-        b3_recall /= len(ids)
-    b3_f1 = 2 * b3_precision * b3_recall / (b3_precision + b3_recall) if b3_precision + b3_recall else 0.0
-    return {
-        "coverage": round(len(ids) / len(truth), 6) if truth else 0.0,
-        "labeled_records": len(truth), "evaluated_records": len(ids),
-        "truth_groups": len(set(truth.values())), "predicted_groups": len({predicted[item] for item in ids}),
-        "pairwise": {
-            "precision": round(precision, 6), "recall": round(recall, 6), "f1": round(f1, 6),
-            "true_positive_pairs": tp, "false_positive_pairs": fp, "false_negative_pairs": fn,
-        },
-        "b3": {"precision": round(b3_precision, 6), "recall": round(b3_recall, 6), "f1": round(b3_f1, 6)},
-        "error_examples": {"false_positive_pairs": false_positives, "false_negative_pairs": false_negatives},
-    }
-
-
-@app.get("/api/evaluation/ground-truth")
-def ground_truth_metadata():
-    try:
-        _records, labels, dataset_hash = _load_ground_truth()
-    except (FileNotFoundError, ValueError, UnicodeError, pd.errors.ParserError) as exc:
-        return jsonify({"available": False, "error": str(exc), "trace_id": g.trace_id}), 503
-    return jsonify({
-        "available": True, "name": "50条物料归并人工真值集", "record_count": len(labels),
-        "group_count": len({item["truth_group"] for item in labels}), "dataset_hash": dataset_hash,
-        "methodology": ["独立人工分组标签", "Pairwise Precision/Recall/F1", "B³聚类Precision/Recall/F1"],
-        "trace_id": g.trace_id,
-    })
-
-
-@app.post("/api/evaluation/run")
-def run_ground_truth_evaluation():
-    payload = request.get_json(silent=True) or {}
-    model = _clean_value(payload.get("model")) or "local"
-    if model not in {*SemanticEngine.MODELS, "local"}:
-        return jsonify({"error": "unsupported evaluation model", "supported_models": [*SemanticEngine.MODELS, "local"]}), 400
-    try:
-        primary_threshold = float(payload.get("threshold", engine.SIMILARITY_THRESHOLD))
-        raw_thresholds = payload.get("thresholds") or [0.45, 0.50, primary_threshold, 0.60, 0.65]
-        thresholds = sorted({round(float(value), 4) for value in raw_thresholds})
-        if not thresholds or len(thresholds) > 12 or any(not 0.0 <= value <= 1.0 for value in thresholds):
-            raise ValueError("thresholds must contain 1 to 12 values between 0 and 1")
-        records, labels, dataset_hash = _load_ground_truth()
-    except (FileNotFoundError, ValueError, TypeError, UnicodeError, pd.errors.ParserError) as exc:
-        return jsonify({"error": str(exc)}), 400
-    semantic = semantic_engine if model != "local" else None
-    sweep = []
-    primary_result = None
-    for threshold in thresholds:
-        _masters, _reviews, mappings, semantic_meta = engine.govern(
-            records, semantic, "qwen" if model == "local" else model, similarity_threshold=threshold,
-        )
-        predicted = {item["original_code"]: item["mdm_code"] for item in mappings}
-        metrics = _cluster_metrics(labels, predicted)
-        result = {"threshold": threshold, **metrics}
-        sweep.append(result)
-        if abs(threshold - primary_threshold) < 1e-9:
-            primary_result = result
-    if primary_result is None:
-        _masters, _reviews, mappings, semantic_meta = engine.govern(
-            records, semantic, "qwen" if model == "local" else model, similarity_threshold=primary_threshold,
-        )
-        primary_result = {"threshold": primary_threshold, **_cluster_metrics(
-            labels, {item["original_code"]: item["mdm_code"] for item in mappings}
-        )}
-        sweep.append(primary_result)
-        sweep.sort(key=lambda item: item["threshold"])
-    recommended_result = max(
-        sweep,
-        key=lambda item: (item["pairwise"]["f1"], item["pairwise"]["precision"], -item["threshold"]),
-    )
-    return jsonify({
-        "dataset": {"name": "50条物料归并人工真值集", "hash": dataset_hash, "record_count": len(labels)},
-        "model": model, "semantic": semantic_meta, "result": primary_result, "threshold_sweep": sweep,
-        "best_pairwise_f1": recommended_result["threshold"],
-        "recommendation": {
-            "threshold": recommended_result["threshold"],
-            "pairwise": recommended_result["pairwise"],
-            "b3": recommended_result["b3"],
-            "selection_basis": "当前真值集 Pairwise F1 最大值；仅作为阈值校准建议，不自动修改生产治理阈值。",
-        },
-        "warning": "该结果仅代表当前真值集；新增数据域需重新抽样标注，不能外推为全域准确率。",
-        "trace_id": g.trace_id,
-    })
-
-
 @app.post("/api/explain")
 def explain_governance_decision():
     payload = request.get_json(silent=True) or {}
@@ -3246,10 +3783,16 @@ def explain_governance_decision():
         mapping_rows = _rows(conn, "SELECT * FROM mappings WHERE batch_id = ? AND mdm_code = ? ORDER BY id", (batch_id, mdm_code))
         records = []
         for mapping in mapping_rows:
-            record = conn.execute(
-                "SELECT * FROM records WHERE batch_id = ? AND material_code = ? ORDER BY id LIMIT 1",
-                (batch_id, mapping["original_code"]),
-            ).fetchone()
+            record = (
+                conn.execute("SELECT * FROM records WHERE id = ?", (mapping["record_id"],)).fetchone()
+                if mapping.get("record_id") else None
+            )
+            if not record:
+                record = conn.execute(
+                    """SELECT * FROM records WHERE batch_id = ? AND system_source = ?
+                       AND material_code = ? AND material_name = ? ORDER BY id LIMIT 1""",
+                    (batch_id, mapping.get("system_source"), mapping.get("original_code"), mapping.get("original_name")),
+                ).fetchone()
             if record:
                 records.append(engine.enrich(dict(record)))
         conflicts = engine.detect_conflicts(records) if records else []
@@ -3278,28 +3821,111 @@ def explain_governance_decision():
     })
 
 
+def _normalize_target_system(value: str) -> str:
+    text = _clean_value(value).lower()
+    for system, aliases in DISTRIBUTION_SYSTEM_ALIASES.items():
+        if text == system.lower() or any(alias in text for alias in aliases):
+            return system
+    return ""
+
+
+def _extract_distribution_filters(text: str) -> dict:
+    filters = {}
+    labels = {
+        "brand": ("品牌", "brand"),
+        "model": ("型号", "model"),
+        "material_name": ("备品备件名称", "物料名称", "备件名称", "零件名称", "名称", "name"),
+    }
+    bracket_items = [
+        _clean_value(value) for value in re.findall(r"[【\[]([^】\]]+)[】\]]", text) if _clean_value(value)
+    ]
+    for field, field_labels in labels.items():
+        for item in bracket_items:
+            for label in field_labels:
+                match = re.match(rf"^{re.escape(label)}\s*[:：=]?\s*(.+)$", item, re.I)
+                if match and _clean_value(match.group(1)) not in field_labels:
+                    filters[field] = _clean_value(match.group(1))
+                    break
+            if field in filters:
+                break
+        if field in filters:
+            continue
+        label_pattern = "|".join(re.escape(label) for label in field_labels)
+        match = re.search(
+            rf"(?:{label_pattern})\s*[:：=]?\s*[【\[]?([^】\],，;；]+?)[】\]]?(?=\s*(?:品牌|型号|备品备件名称|物料名称|备件名称|零件名称|发往|同步到|分发到|$))",
+            text, re.I,
+        )
+        if match:
+            value = _clean_value(match.group(1))
+            if value and value.lower() not in {label.lower() for label in field_labels}:
+                filters[field] = value
+    before_destination = re.split(r"发往|同步到|分发到|发送到", text, maxsplit=1)[0]
+    unnamed = [
+        item for item in re.findall(r"[【\[]([^】\]]+)[】\]]", before_destination)
+        if not any(label.lower() in item.lower() for values in labels.values() for label in values)
+        and not _normalize_target_system(item)
+        and not any(alias in item.lower() for alias in PLANT_ALIASES)
+    ]
+    for field, value in zip(("brand", "model", "material_name"), unnamed):
+        filters.setdefault(field, _clean_value(value))
+    return filters
+
+
 def _parse_distribution_intent(text: str, plant_code=None) -> dict:
     lower = _clean_value(text).lower()
-    rules = {
-        "SAP": ("sap", "erp", "财务系统"),
-        "EAM": ("eam", "设备系统", "资产系统"),
-        "MES": ("mes", "制造系统", "生产系统"),
-        "WMS": ("wms", "仓储系统", "库存系统", "仓库系统"),
-    }
-    targets = list(rules) if any(k in lower for k in ("全部系统", "所有系统", "all systems")) else [
-        target for target, keywords in rules.items() if any(keyword in lower for keyword in keywords)
+    targets = list(DISTRIBUTION_SYSTEM_ALIASES) if any(
+        key in lower for key in ("全部系统", "所有系统", "all systems")
+    ) else [
+        system for system, aliases in DISTRIBUTION_SYSTEM_ALIASES.items()
+        if system.lower() in lower or any(alias in lower for alias in aliases)
     ]
-    detected_plant = _normalize_plant_code(plant_code)
-    for alias, code in PLANT_ALIASES.items():
-        if alias in lower:
-            detected_plant = code
-            break
-    mode = "INCREMENTAL" if any(k in lower for k in ("增量", "新增", "刚批准", "最新")) else "FULL"
+    target_plants = []
+    for alias, code in sorted(PLANT_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias in lower and code not in target_plants:
+            target_plants.append(code)
+    if plant_code:
+        explicit_plant = _normalize_plant_code(plant_code)
+        if explicit_plant not in target_plants:
+            target_plants.append(explicit_plant)
+    if not target_plants:
+        target_plants = ["GROUP"]
+    filters = _extract_distribution_filters(text)
+    mode = "INCREMENTAL" if any(key in lower for key in ("增量", "新增", "刚批准", "最新")) else "FULL"
+    confidence = 0.35 + (0.35 if targets else 0) + (0.15 if filters else 0) + (0.1 if target_plants else 0)
     return {
         "text": text, "action": "DISTRIBUTE" if targets else "UNKNOWN",
-        "targets": targets, "target_systems": targets, "plant_code": detected_plant,
-        "mode": mode, "scope": "APPROVED_MASTERS", "confidence": 0.96 if targets else 0.35,
+        "targets": targets, "target_systems": targets, "target_plants": target_plants,
+        "plant_code": target_plants[0], "filters": filters, "mode": mode,
+        "scope": "FILTERED_APPROVED_MASTERS" if filters else "APPROVED_MASTERS",
+        "confidence": round(min(confidence, 0.98), 2),
     }
+
+
+def _match_distribution_masters(
+    conn: sqlite3.Connection, batch_id: str, filters: dict, target_plants: list[str]
+) -> list[dict]:
+    rows = _rows(
+        conn,
+        """SELECT * FROM batch_masters WHERE batch_id = ?
+           AND decision IN ('AUTO_MERGE', 'NEW', 'CONFIRMED_NEW') ORDER BY rowid""",
+        (batch_id,),
+    )
+    matched = []
+    for row in rows:
+        if target_plants and not any(_master_distributable_to_plant(row.get("plant_codes"), plant) for plant in target_plants):
+            continue
+        checks = []
+        if filters.get("brand"):
+            checks.append(_clean_value(filters["brand"]).lower() in _clean_value(row.get("brand")).lower())
+        if filters.get("model"):
+            checks.append(_clean_value(filters["model"]).lower() in _clean_value(row.get("model")).lower())
+        if filters.get("material_name"):
+            query_name = engine.standardize_text(filters["material_name"])
+            master_name = engine.standardize_text(row.get("standard_name"))
+            checks.append(query_name in master_name or master_name in query_name)
+        if all(checks):
+            matched.append(row)
+    return matched
 
 
 @app.post("/api/intent")
@@ -3309,8 +3935,27 @@ def api_intent():
     if not text:
         return jsonify({"error": "text is required"}), 400
     response = _parse_distribution_intent(text, payload.get("plant_code"))
+    with db_connect() as conn:
+        batch_id = payload.get("batch_id") or _latest_batch_id(conn)
+        matches = _match_distribution_masters(
+            conn, batch_id, response["filters"], response["target_plants"]
+        ) if batch_id else []
+    response.update({
+        "batch_id": batch_id, "matched_master_count": len(matches),
+        "matched_masters": [{
+            key: item.get(key) for key in ("mdm_code", "standard_name", "brand", "model", "category", "plant_codes")
+        } for item in matches[:20]],
+        "task_count": len(matches) * len(response["target_systems"]) * len(response["target_plants"]),
+        "requires_confirmation": bool(response["target_systems"] and matches),
+    })
+    response["question"] = (
+        f"已匹配 {len(matches)} 条黄金主数据，将生成 {response['task_count']} 个分发任务，是否确认执行？"
+        if response["target_systems"] and matches else "请补充可识别的目标系统和物料条件。"
+    )
     if not response["targets"]:
-        response["warning"] = "未识别到目标系统，请在指令中包含 SAP、EAM、MES 或 WMS。"
+        response["warning"] = "未识别到目标系统，请在指令中包含 ERP、SAP、EAM、MES、WMS 或采购平台。"
+    elif response["filters"] and not matches:
+        response["warning"] = "未找到同时满足品牌、型号和名称条件的已批准黄金主数据。"
     return jsonify(response)
 
 
@@ -3670,73 +4315,133 @@ def distribute():
     payload = request.get_json(silent=True) or {}
     instruction = _clean_value(payload.get("instruction") or payload.get("text") or payload.get("prompt"))
     intent = _parse_distribution_intent(instruction, payload.get("plant_code")) if instruction else None
-    targets = payload.get("target_systems") or (intent or {}).get("target_systems") or []
-    master_codes = payload.get("master_codes") or [item.get("mdm_code") for item in payload.get("masters", []) if item.get("mdm_code")]
+    raw_targets = payload.get("target_systems") or (intent or {}).get("target_systems") or []
+    if isinstance(raw_targets, str):
+        raw_targets = [raw_targets]
+    targets, unsupported_targets = [], []
+    for raw_target in raw_targets:
+        target = _normalize_target_system(raw_target)
+        if not target:
+            unsupported_targets.append(_clean_value(raw_target))
+        elif target not in targets:
+            targets.append(target)
+    if unsupported_targets:
+        return jsonify({
+            "error": "unsupported target system", "unsupported": unsupported_targets,
+            "supported_systems": list(DISTRIBUTION_SYSTEM_ALIASES),
+        }), 400
+    master_codes = payload.get("master_codes") or [
+        item.get("mdm_code") for item in payload.get("masters", []) if item.get("mdm_code")
+    ]
+    if isinstance(master_codes, str):
+        master_codes = [master_codes]
+    master_codes = list(dict.fromkeys(filter(None, master_codes)))
     if not targets:
         return jsonify({"error": "target_systems or a recognizable distribution instruction is required"}), 400
     mode = _clean_value(payload.get("mode") or (intent or {}).get("mode") or "FULL").upper()
-    plant_code = _normalize_plant_code((intent or {}).get("plant_code") or payload.get("plant_code"))
-    if plant_code not in PLANTS:
-        return jsonify({"error": f"unsupported plant_code: {plant_code}", "supported_plants": PLANTS}), 400
+    raw_plants = payload.get("target_plants") or (intent or {}).get("target_plants")
+    if not raw_plants:
+        raw_plants = [payload.get("plant_code") or "GROUP"]
+    if isinstance(raw_plants, str):
+        raw_plants = [raw_plants]
+    target_plants = list(dict.fromkeys(_normalize_plant_code(item) for item in raw_plants))
+    unsupported_plants = [item for item in target_plants if item not in PLANTS]
+    if unsupported_plants:
+        return jsonify({"error": "unsupported plant_code", "unsupported": unsupported_plants, "supported_plants": PLANTS}), 400
+    filters = payload.get("filters") or (intent or {}).get("filters") or {}
+    if instruction and payload.get("confirmed") is not True:
+        return jsonify({
+            "error": "distribution plan requires confirmation", "requires_confirmation": True,
+            "intent": intent, "confirmation_hint": "resubmit with confirmed: true",
+        }), 409
     logs = []
     with db_connect() as conn:
         batch_id = payload.get("batch_id") or _latest_batch_id(conn)
         if not batch_id:
             return jsonify({"error": "no governed batch is available"}), 400
-        if not master_codes and instruction:
-            rows = conn.execute(
-                """SELECT mdm_code FROM batch_masters
-                   WHERE batch_id = ? AND decision IN ('AUTO_MERGE', 'NEW', 'CONFIRMED_NEW')""",
-                (batch_id,),
-            ).fetchall()
-            master_codes = [row["mdm_code"] for row in rows]
+        if not master_codes:
+            master_codes = [
+                item["mdm_code"] for item in _match_distribution_masters(conn, batch_id, filters, target_plants)
+            ]
         if not master_codes:
             return jsonify({"error": "no approved master data is available for distribution"}), 400
         placeholders = ",".join("?" for _ in master_codes)
-        rows = conn.execute(
-            f"""SELECT mdm_code, standard_name, decision, plant_codes FROM batch_masters
+        rows = _rows(
+            conn,
+            f"""SELECT mdm_code, standard_name, category, model, brand, dn, pressure, material,
+                       decision, plant_codes FROM batch_masters
                 WHERE batch_id = ? AND mdm_code IN ({placeholders})""",
             [batch_id, *master_codes],
-        ).fetchall()
-        known = {
-            row["mdm_code"]: row["standard_name"] for row in rows
-            if row["decision"] in {"AUTO_MERGE", "NEW", "CONFIRMED_NEW"}
-            and _master_distributable_to_plant(row["plant_codes"], plant_code)
-        }
-        for target in targets:
-            for code in master_codes:
-                status = "SUCCESS" if code in known else "FAILED"
-                message = "模拟适配器已生成接口载荷" if status == "SUCCESS" else "主数据未批准或不在当前工厂范围"
-                cursor = conn.execute(
-                    """INSERT INTO distribution_logs
-                       (batch_id, target_system, mdm_code, standard_name, sync_mode, sync_frequency,
-                        status, message, plant_code, instruction)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (batch_id, target, code, known.get(code, ""), mode, "MANUAL", status, message,
-                     plant_code, instruction),
-                )
-                logs.append({"id": cursor.lastrowid, "target_system": target, "mdm_code": code,
-                             "standard_name": known.get(code, ""), "sync_mode": mode, "sync_frequency": "MANUAL",
-                             "status": status, "message": message, "plant_code": plant_code,
-                             "instruction": instruction})
+        )
+        known = {row["mdm_code"]: row for row in rows if row["decision"] in {"AUTO_MERGE", "NEW", "CONFIRMED_NEW"}}
+        artifacts = []
+        for plant_code in target_plants:
+            for target in targets:
+                for code in master_codes:
+                    master = known.get(code)
+                    allowed = bool(master and _master_distributable_to_plant(master["plant_codes"], plant_code))
+                    status = "SUCCESS" if allowed else "FAILED"
+                    adapter_payload = {
+                        "event_id": f"DIST-{uuid.uuid4().hex[:12].upper()}",
+                        "target_system": target, "target_plant": plant_code,
+                        "mdm_code": code, "material_name": (master or {}).get("standard_name", ""),
+                        "brand": (master or {}).get("brand", ""), "model": (master or {}).get("model", ""),
+                        "category": (master or {}).get("category", ""), "dn": (master or {}).get("dn", ""),
+                        "pressure": (master or {}).get("pressure", ""), "material": (master or {}).get("material", ""),
+                        "mode": mode, "issued_at": _utc_now(),
+                    }
+                    adapter_payload["payload_hash"] = hashlib.sha256(
+                        _canonical_json(adapter_payload).encode("utf-8")
+                    ).hexdigest()
+                    message = "分发适配器已生成可交付载荷" if allowed else "主数据未批准或不在当前工厂范围"
+                    cursor = conn.execute(
+                        """INSERT INTO distribution_logs
+                           (batch_id, target_system, mdm_code, standard_name, sync_mode, sync_frequency,
+                            status, message, plant_code, instruction, payload_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (batch_id, target, code, (master or {}).get("standard_name", ""), mode, "MANUAL",
+                         status, message, plant_code, instruction,
+                         json.dumps(adapter_payload, ensure_ascii=False)),
+                    )
+                    log = {
+                        "id": cursor.lastrowid, "target_system": target, "mdm_code": code,
+                        "standard_name": (master or {}).get("standard_name", ""), "sync_mode": mode,
+                        "sync_frequency": "MANUAL", "status": status, "message": message,
+                        "plant_code": plant_code, "instruction": instruction, "payload": adapter_payload,
+                    }
+                    logs.append(log)
+                    if allowed:
+                        artifacts.append({
+                            "artifact_id": adapter_payload["event_id"], "target_system": target,
+                            "plant_code": plant_code, "mdm_code": code,
+                            "payload_hash": adapter_payload["payload_hash"], "status": "DELIVERED",
+                        })
         success_count = sum(item["status"] == "SUCCESS" for item in logs)
         failed_count = sum(item["status"] == "FAILED" for item in logs)
         if success_count:
             _set_workflow_step(conn, batch_id, "DISTRIBUTE", "COMPLETED", 100, {
                 "success_count": success_count, "failed_count": failed_count,
-                "plant_code": plant_code, "target_systems": targets,
+                "plant_codes": target_plants, "target_systems": targets,
             })
             _set_workflow_step(conn, batch_id, "FEEDBACK", "ACTION_REQUIRED", 0, {
                 "feedback_count": conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0],
-                "plant_code": plant_code,
+                "plant_codes": target_plants,
             })
-        _append_audit_block(conn, batch_id, "MASTER_DISTRIBUTED", "DISTRIBUTION", plant_code, {
-            "target_systems": targets, "master_count": len(master_codes), "success_count": success_count,
-            "failed_count": failed_count, "mode": mode, "instruction": instruction,
-        }, actor=_clean_value(payload.get("actor")) or "分发Agent")
+        for plant_code in target_plants:
+            plant_artifacts = [item for item in artifacts if item["plant_code"] == plant_code]
+            _append_audit_block(conn, batch_id, "MASTER_DISTRIBUTED", "DISTRIBUTION", plant_code, {
+                "target_systems": targets, "master_codes": master_codes,
+                "artifact_hashes": [item["payload_hash"] for item in plant_artifacts],
+                "success_count": len(plant_artifacts),
+                "failed_count": sum(item["plant_code"] == plant_code and item["status"] == "FAILED" for item in logs),
+                "mode": mode, "instruction": instruction, "filters": filters,
+            }, actor=_clean_value(payload.get("actor")) or "分发Agent")
+    primary_plant = target_plants[0]
     return jsonify({
-        "simulated": True, "intent": intent, "plant_code": plant_code,
-        "plant_name": PLANTS[plant_code], "logs": logs,
+        "simulated": True, "intent": intent, "plant_code": primary_plant,
+        "plant_name": PLANTS[primary_plant], "target_plants": target_plants,
+        "target_systems": targets, "filters": filters, "master_codes": master_codes,
+        "logs": logs, "artifacts": artifacts,
         "success_count": success_count,
         "failed_count": failed_count,
         "workflow_endpoint": f"/api/workflow/{batch_id}",
@@ -3758,7 +4463,10 @@ def submit_plant_feedback():
         return jsonify({"error": "rating must be an integer from 1 to 5"}), 400
     if rating < 1 or rating > 5:
         return jsonify({"error": "rating must be between 1 and 5"}), 400
-    accepted = bool(payload.get("accepted", True))
+    accepted_value = payload.get("accepted", True)
+    if not isinstance(accepted_value, bool):
+        return jsonify({"error": "accepted must be a JSON boolean"}), 400
+    accepted = accepted_value
     with db_connect() as conn:
         batch_id = payload.get("batch_id") or _latest_batch_id(conn)
         if not batch_id:
@@ -3786,8 +4494,29 @@ def submit_plant_feedback():
         )
         vector_meta = _index_batch_vectors(conn, batch_id, "local")
         feedback_count = conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0]
-        _set_workflow_step(conn, batch_id, "FEEDBACK", "COMPLETED", 100, {
+        expected_pairs = {
+            (item["plant_code"], item["mdm_code"]) for item in _rows(
+                conn,
+                """SELECT DISTINCT plant_code, mdm_code FROM distribution_logs
+                   WHERE batch_id = ? AND status = 'SUCCESS' AND plant_code != 'GROUP'""",
+                (batch_id,),
+            )
+        }
+        completed_pairs = {
+            (item["plant_code"], item["mdm_code"]) for item in _rows(
+                conn,
+                """SELECT DISTINCT plant_code, mdm_code FROM plant_feedback
+                   WHERE batch_id = ? AND accepted = 1""",
+                (batch_id,),
+            )
+        }
+        pending_pairs = sorted(expected_pairs - completed_pairs)
+        feedback_complete = bool(expected_pairs) and not pending_pairs
+        feedback_progress = round(len(expected_pairs & completed_pairs) / max(1, len(expected_pairs)) * 100)
+        _set_workflow_step(conn, batch_id, "FEEDBACK", "COMPLETED" if feedback_complete else "ACTION_REQUIRED",
+                           feedback_progress, {
             "feedback_count": feedback_count, "latest_plant": plant_code,
+            "expected_factory_master_pairs": len(expected_pairs), "pending_pairs": pending_pairs,
             "vector_refresh": {"indexed": vector_meta["indexed"], "model": vector_meta["model"]},
         })
         block = _append_audit_block(conn, batch_id, "FACTORY_FEEDBACK", "MASTER", mdm_code, {

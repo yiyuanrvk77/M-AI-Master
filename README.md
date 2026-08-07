@@ -1,4 +1,4 @@
-# M-AI Master 4.3
+# M-AI Master 4.4
 
 面向大型制造集团的 AI 物料主数据智能治理与共享演示系统。系统以 Flask + SQLite 为权威运行端，完成多源数据接入、标准识别、Embedding 向量入库、图谱辅助查重、多主体审核、质量评估、跨工厂分发和工厂反馈回流八步闭环。
 
@@ -12,14 +12,20 @@
 
 自动安装只允许从运行 Flask 的服务器电脑触发，局域网其他电脑不能远程执行安装命令。OCR 被安装在独立 `.venv-ocr`，主平台即使使用 Python 3.14 也会通过隔离子进程调用 Python 3.11 OCR，无需重启。安装失败时会展示日志摘要，并自动尝试 Qwen-VL 或规则解析，治理流程不会崩溃。也可以手动双击 `install-ocr.bat`；脚本依次尝试阿里云、清华和官方 PyPI，并在真实导入 `paddle` 与 `paddleocr` 后才进入模型初始化。企业内网可在 `backend/.env` 中通过 `MDM_PIP_INDEX_URL` 指向内部 PyPI 代理。
 
+## macOS / Linux 运行
+
+macOS 或 Linux 安装 Python 3.11 及以上版本后，在项目目录执行 `sh start.sh` 即可直接启动，不依赖文件的可执行权限。若希望以后在 macOS Finder 中双击启动，首次执行 `chmod +x start.command start.sh`，之后右键 `start.command` 选择“打开”。脚本会创建隔离环境、安装依赖、启动 Gunicorn，并在服务就绪后打开 `http://127.0.0.1:5000`。换电脑或 Wi-Fi 后无需修改代码，局域网访问地址会在启动窗口重新计算；生产环境应在网关、DNS 和 HTTPS 下发布固定地址。
+
 ## 核心证据
 
-- `evaluation/ground_truth_50.csv`：50 条独立人工分组真值标签，共 27 个真值组。
-- `POST /api/evaluation/run`：输出 Pairwise Precision/Recall/F1、B³ 聚类指标、阈值扫描、数据集哈希和错误样例。
+- `GET /api/lineage/source/<record_id>`：从问题记录回溯来源系统、源表、业务主键、连接器状态和记录 SHA-256 指纹。
+- `GET /api/graph`：展示来源系统、问题记录、黄金主数据、八步工作流、分发、反馈和哈希审计块的统一关系图。
+- `GET /api/reports/governance`：输出可下发给源业务系统的质量整改报告及报告指纹。
+- `POST /api/intent` + `POST /api/distribute`：自然语言解析品牌/型号/名称、目标系统和工厂，先确认计划再执行精确分发。
 - `POST /api/explain`：基于真实来源记录、关键属性、冲突与命中规则生成治理解释；无大模型时使用事实模板。
 - `POST /api/ocr`：PaddleOCR 本地识别、Qwen-VL 增强、规则兜底三级适配器。
 - `GET/POST /api/ocr/install`：查询或启动受控的一键 OCR 安装任务，返回阶段进度和日志摘要。
-- `GET /api/blockchain/verify`：验证 SHA-256 防篡改链式审计账本。该实现不是公链或联盟链共识网络。
+- `GET /api/blockchain/verify`：验证 SHA-256 防篡改链式审计账本，并核对八步工作流当前状态是否与各步骤的最新指纹一致。该实现不是公链或联盟链共识网络。
 
 ## 环境配置
 
@@ -31,6 +37,7 @@
 - `MDM_HOST=0.0.0.0`：允许局域网访问。
 - `MDM_PADDLEOCR_ENABLED=1`：启用本地 OCR 懒加载。
 - `MDM_ALLOW_OCR_INSTALL=1`：允许服务器本机浏览器触发自动安装；设为 `0` 可关闭。
+- `MDM_SAP_SOURCE_URL` / `MDM_ERP_SOURCE_URL` / `MDM_EAM_SOURCE_URL`：配置后，来源追溯可生成指向真实源业务对象的深链接。
 
 首次 OCR 安装需要访问 Python/PyPI/Paddle 模型源，通常占用数分钟和较多磁盘空间。企业内网应把 Python 3.11、Python wheel 和 Paddle 模型放入内部制品库，再将安装脚本中的源地址替换为内网地址，而不是允许生产服务器直接访问公网。
 

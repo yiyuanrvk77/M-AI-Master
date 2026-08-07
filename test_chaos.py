@@ -155,6 +155,27 @@ class ChaosTest(unittest.TestCase):
         self.assertEqual(verification.status_code, 200)
         self.assertFalse(verification.get_json()["valid"])
         self.assertTrue(verification.get_json()["errors"])
+        graph = self.client.get(f"/api/graph?batch_id={batch_id}&raw_limit=5").get_json()
+        self.assertFalse(graph["stats"]["audit"]["valid"])
+        audit_nodes = [node for node in graph["nodes"] if node["node_type"] == "AUDIT"]
+        self.assertTrue(audit_nodes)
+        self.assertTrue(all(not node["verified"] for node in audit_nodes))
+
+    def test_workflow_state_tampering_is_detected(self):
+        state = self.upload_sample()
+        batch_id = state["batch"]["batch_id"]
+        with backend.db_connect() as conn:
+            conn.execute(
+                """UPDATE workflow_steps SET status = 'FORGED', progress = 13
+                   WHERE batch_id = ? AND step_code = 'INGEST'""",
+                (batch_id,),
+            )
+        verification = self.client.get(f"/api/blockchain/verify?batch_id={batch_id}").get_json()
+        self.assertFalse(verification["valid"])
+        self.assertTrue(any(
+            item.get("step_code") == "INGEST" and "指纹" in item.get("error", "")
+            for item in verification["errors"]
+        ))
 
 
 if __name__ == "__main__":

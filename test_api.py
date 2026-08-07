@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -72,8 +74,10 @@ class FlaskApiTest(unittest.TestCase):
         self.assertTrue((PROJECT_DIR / "start-ocr.bat").exists())
         self.assertTrue((BACKEND_DIR / "ocr_worker.py").exists())
         self.assertIn("py install -y 3.11", (PROJECT_DIR / "install-ocr.bat").read_text(encoding="utf-8"))
-        self.assertTrue((PROJECT_DIR / "evaluation" / "ground_truth_50.csv").exists())
+        self.assertFalse((PROJECT_DIR / "evaluation" / "ground_truth_50.csv").exists())
         self.assertIn("gunicorn", start_unix)
+        self.assertIn("Darwin", start_unix)
+        self.assertTrue((PROJECT_DIR / "start.command").exists())
         self.assertNotIn("MDM_FRONTEND_DIR=/app/frontend", dockerfile)
         self.assertIn("/app/data", dockerfile)
         self.assertIn("./runtime/data:/app/data", compose)
@@ -124,7 +128,7 @@ class FlaskApiTest(unittest.TestCase):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.get_json()["storage"], "sqlite")
-        self.assertEqual(health.get_json()["version"], "4.3")
+        self.assertEqual(health.get_json()["version"], "4.4")
         self.assertTrue(health.get_json()["ready"])
         self.assertFalse(health.get_json()["authentication"])
         root_response = self.client.get("/")
@@ -330,7 +334,7 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(len(capability_payload["workflow"]), 8)
         self.assertEqual(capability_payload["workflow"][-1]["code"], "FEEDBACK")
 
-    def test_real_ocr_adapter_ground_truth_evaluation_and_explanation(self):
+    def test_real_ocr_adapter_and_explanation(self):
         with patch.object(backend.ocr_engine, "_paddle_recognize", return_value=(
             "SKF 6312-2RS1 深沟球轴承 316L 1.6MPa", 0.94
         )):
@@ -344,25 +348,6 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(ocr.get_json()["brand"], "SKF")
         self.assertEqual(ocr.get_json()["pressure"], "1.6MPa")
 
-        metadata = self.client.get("/api/evaluation/ground-truth")
-        self.assertEqual(metadata.status_code, 200, metadata.get_json())
-        self.assertEqual(metadata.get_json()["record_count"], 50)
-        self.assertEqual(metadata.get_json()["group_count"], 27)
-        evaluation = self.client.post("/api/evaluation/run", json={
-            "model": "local", "threshold": 0.55, "thresholds": [0.50, 0.55, 0.60],
-        })
-        self.assertEqual(evaluation.status_code, 200, evaluation.get_json())
-        evaluation_payload = evaluation.get_json()
-        result = evaluation_payload["result"]
-        self.assertEqual(result["evaluated_records"], 50)
-        self.assertIn("precision", result["pairwise"])
-        self.assertIn("f1", result["b3"])
-        self.assertEqual(evaluation_payload["recommendation"]["threshold"], 0.60)
-        self.assertGreater(
-            evaluation_payload["recommendation"]["pairwise"]["f1"],
-            result["pairwise"]["f1"],
-        )
-
         state = self.upload_sample()
         explanation = self.client.post("/api/explain", json={
             "batch_id": state["batch"]["batch_id"], "mdm_code": state["masters"][0]["mdm_code"],
@@ -373,6 +358,17 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn(state["masters"][0]["mdm_code"], payload["explanation"])
         self.assertEqual(payload["runtime"]["method"], "事实模板解释（降级）")
         self.assertTrue(payload["runtime"]["evidence_hash"])
+
+    def test_ground_truth_evaluation_module_is_removed(self):
+        self.assertEqual(self.client.get("/api/evaluation/ground-truth").status_code, 404)
+        self.assertEqual(self.client.post("/api/evaluation/run", json={}).status_code, 404)
+        capabilities = self.client.get("/api/health").get_json()["capabilities"]
+        self.assertNotIn("ground_truth_evaluation", capabilities)
+        page_response = self.client.get("/")
+        page = page_response.get_data(as_text=True)
+        page_response.close()
+        self.assertNotIn("/evaluation/run", page)
+        self.assertNotIn("50 条人工真值集评测", page)
 
     def test_qwen_embedding_request_and_native_dimension(self):
         class FakeResponse:
@@ -437,13 +433,55 @@ class FlaskApiTest(unittest.TestCase):
 
         distributed = self.client.post(
             "/api/distribute",
-            json={"batch_id": batch_id, "instruction": "把上海工厂新增主数据同步到SAP和WMS"},
+            json={
+                "batch_id": batch_id, "instruction": "把上海工厂新增主数据同步到SAP和WMS",
+                "confirmed": True,
+            },
         )
         self.assertEqual(distributed.status_code, 200, distributed.get_json())
         distributed_payload = distributed.get_json()
         self.assertGreater(distributed_payload["success_count"], 0)
         self.assertEqual(distributed_payload["failed_count"], 0)
         self.assertTrue(all(item["plant_code"] == "SHANGHAI" for item in distributed_payload["logs"]))
+
+    def test_precise_natural_language_distribution_requires_confirmation(self):
+        response = self.client.post("/api/batches", json={
+            "filename": "precise-distribution.json", "plant_code": "GROUP", "records": [
+                {"material_code": "P-01", "system_source": "SAP", "material_name": "SKF 6312深沟球轴承", "description": "SKF bearing 6312"},
+                {"material_code": "P-02", "system_source": "EAM", "material_name": "FAG 6205深沟球轴承", "description": "FAG bearing 6205"},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        batch_id = response.get_json()["batch"]["batch_id"]
+        instruction = "帮我把【品牌 SKF】【型号 6312】【备品备件名称 深沟球轴承】发往【ERP系统】【上海厂】"
+        plan_response = self.client.post("/api/intent", json={"batch_id": batch_id, "text": instruction})
+        self.assertEqual(plan_response.status_code, 200, plan_response.get_json())
+        plan = plan_response.get_json()
+        self.assertEqual(plan["filters"], {"brand": "SKF", "model": "6312", "material_name": "深沟球轴承"})
+        self.assertEqual(plan["target_systems"], ["ERP"])
+        self.assertEqual(plan["target_plants"], ["SHANGHAI"])
+        self.assertEqual(plan["matched_master_count"], 1)
+        self.assertTrue(plan["requires_confirmation"])
+        self.assertEqual(self.client.get(f"/api/batches/{batch_id}").get_json()["distribution_logs"], [])
+
+        unconfirmed = self.client.post("/api/distribute", json={"batch_id": batch_id, "instruction": instruction})
+        self.assertEqual(unconfirmed.status_code, 409, unconfirmed.get_json())
+        false_string = self.client.post("/api/distribute", json={
+            "batch_id": batch_id, "instruction": instruction, "confirmed": "false",
+        })
+        self.assertEqual(false_string.status_code, 409, false_string.get_json())
+        executed = self.client.post("/api/distribute", json={
+            "batch_id": batch_id, "instruction": instruction, "confirmed": True,
+        })
+        self.assertEqual(executed.status_code, 200, executed.get_json())
+        result = executed.get_json()
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(len(result["logs"]), 1)
+        self.assertEqual(result["logs"][0]["target_system"], "ERP")
+        self.assertEqual(result["logs"][0]["plant_code"], "SHANGHAI")
+        self.assertEqual(result["logs"][0]["payload"]["brand"], "SKF")
+        self.assertEqual(result["logs"][0]["payload"]["model"], "6312")
+        self.assertRegex(result["logs"][0]["payload"]["payload_hash"], r"^[0-9a-f]{64}$")
 
     def test_group_golden_master_can_be_distributed_to_factories(self):
         response = self.client.post(
@@ -518,12 +556,98 @@ class FlaskApiTest(unittest.TestCase):
         self.assertGreater(graph["stats"]["nodes"], 72)
         self.assertGreater(graph["stats"]["edges"], 72)
         self.assertIn("MASTER", graph["stats"]["types"])
+        self.assertTrue({"SYSTEM", "RAW", "MASTER", "BATCH", "AUDIT", "WORKFLOW_STEP"}.issubset(graph["stats"]["types"]))
+        self.assertTrue({"PROVIDES_RECORD", "MAPPED_TO", "INGESTED_RECORD", "FINGERPRINTS", "PREVIOUS_HASH"}.issubset(
+            {edge["relation"] for edge in graph["edges"]}
+        ))
+        self.assertTrue(graph["stats"]["audit"]["valid"])
         self.assertTrue(all("x" in node and "centrality" in node for node in graph["nodes"]))
+        workflow_nodes = [node for node in graph["nodes"] if node["node_type"] == "WORKFLOW_STEP"]
+        self.assertEqual(len(workflow_nodes), 8)
+        self.assertTrue(all(node["fingerprint_count"] >= 1 for node in workflow_nodes))
+        self.assertTrue(all(node["chain_valid"] for node in workflow_nodes))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", node["latest_block_hash"]) for node in workflow_nodes))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", node["latest_payload_hash"]) for node in workflow_nodes))
+        first_report = self.client.get(f"/api/reports/governance?batch_id={batch_id}").get_json()
+        second_report = self.client.get(f"/api/reports/governance?batch_id={batch_id}").get_json()
+        self.assertEqual(first_report["report_hash"], second_report["report_hash"])
+        self.assertNotEqual(first_report["generated_at"], "")
 
         mdm_code = state["masters"][0]["mdm_code"]
         lineage = self.client.get(f"/api/graph/lineage/{mdm_code}?batch_id={batch_id}")
         self.assertEqual(lineage.status_code, 200)
-        self.assertGreater(lineage.get_json()["degree"], 0)
+        lineage_payload = lineage.get_json()
+        self.assertGreater(lineage_payload["degree"], 0)
+        self.assertTrue(lineage_payload["source_records"])
+        self.assertTrue(lineage_payload["audit_proofs"])
+
+        record_id = state["mappings"][0]["record_id"]
+        source = self.client.get(f"/api/lineage/source/{record_id}")
+        self.assertEqual(source.status_code, 200, source.get_json())
+        source_payload = source.get_json()
+        self.assertTrue(source_payload["provenance"]["source_record_id"])
+        self.assertTrue(source_payload["provenance"]["source_table"])
+        self.assertRegex(source_payload["provenance"]["record_hash"], r"^[0-9a-f]{64}$")
+        self.assertTrue(source_payload["mappings"])
+        self.assertEqual(self.client.get("/api/lineage/source/999999").status_code, 404)
+
+    def test_source_lineage_preserves_business_key_and_factory_scope(self):
+        response = self.client.post("/api/batches", json={
+            "filename": "source-lineage.json", "records": [
+                {"material_code": "SH-L-01", "system_source": "SAP", "material_name": "上海轴承",
+                 "description": "6205 bearing", "plant_code": "SHANGHAI",
+                 "_extra": {"source_record_id": "MARA-SH-001", "source_table": "MARA"}},
+                {"material_code": "BJ-L-01", "system_source": "EAM", "material_name": "北京闸阀",
+                 "description": "DN50 gate valve", "plant_code": "BEIJING",
+                 "_extra": {"source_record_id": "EAM-BJ-001", "source_table": "EAM_MATERIAL"}},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        state = response.get_json()
+        self.assertEqual(state["quality_report"]["lineage"]["traceable_records"], 2)
+        self.assertRegex(state["quality_report"]["lineage"]["source_fingerprint_root"], r"^[0-9a-f]{64}$")
+        by_plant = {item["plant_code"]: item for item in state["records"]}
+        shanghai = self.client.get(f"/api/lineage/source/{by_plant['SHANGHAI']['id']}?plant_code=SHANGHAI")
+        self.assertEqual(shanghai.status_code, 200, shanghai.get_json())
+        self.assertEqual(shanghai.get_json()["provenance"]["source_record_id"], "MARA-SH-001")
+        self.assertEqual(shanghai.get_json()["provenance"]["source_table"], "MARA")
+        forbidden = self.client.get(f"/api/lineage/source/{by_plant['BEIJING']['id']}?plant_code=SHANGHAI")
+        self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
+
+    def test_factory_lineage_hides_other_factory_delivery_and_feedback(self):
+        response = self.client.post("/api/batches", json={
+            "filename": "factory-scope.json", "plant_code": "GROUP", "records": [
+                {"material_code": "HQ-SCOPE-01", "system_source": "SAP",
+                 "material_name": "SKF 6205深沟球轴承", "description": "上海来源", "plant_code": "SHANGHAI"},
+                {"material_code": "HQ-SCOPE-02", "system_source": "EAM",
+                 "material_name": "SKF 6205深沟球轴承", "description": "北京来源", "plant_code": "BEIJING"},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        state = response.get_json()
+        batch_id = state["batch"]["batch_id"]
+        master_code = state["masters"][0]["mdm_code"]
+        record_id = next(item["id"] for item in state["records"] if item["plant_code"] == "SHANGHAI")
+        distributed = self.client.post("/api/distribute", json={
+            "batch_id": batch_id, "target_systems": ["ERP"],
+            "target_plants": ["SHANGHAI", "BEIJING"], "master_codes": [master_code],
+        })
+        self.assertEqual(distributed.status_code, 200, distributed.get_json())
+        for plant, comment in (("SHANGHAI", "上海可复用"), ("BEIJING", "北京内部备注")):
+            feedback = self.client.post("/api/feedback", json={
+                "batch_id": batch_id, "plant_code": plant, "mdm_code": master_code,
+                "accepted": True, "rating": 5, "comment": comment,
+            })
+            self.assertEqual(feedback.status_code, 201, feedback.get_json())
+        source = self.client.get(f"/api/lineage/source/{record_id}?plant_code=SHANGHAI").get_json()
+        self.assertTrue(source["distributions"])
+        self.assertTrue(source["feedback"])
+        self.assertTrue(all(item["plant_code"] == "SHANGHAI" for item in source["distributions"]))
+        self.assertTrue(all(item["plant_code"] == "SHANGHAI" for item in source["feedback"]))
+        self.assertNotIn("北京内部备注", json.dumps(source, ensure_ascii=False))
+        graph = self.client.get(f"/api/graph?batch_id={batch_id}&plant_code=SHANGHAI").get_json()
+        scoped_nodes = [item for item in graph["nodes"] if item["node_type"] in {"TARGET_SYSTEM", "FEEDBACK", "PLANT"}]
+        self.assertNotIn("BEIJING", {item.get("entity_id") for item in scoped_nodes})
 
     def test_qwen_agent_fallback_and_traceability(self):
         response = self.client.post("/api/agent/plan", json={"task": "治理新批次并分发到上海工厂"})
@@ -563,10 +687,23 @@ class FlaskApiTest(unittest.TestCase):
 
         distributed = self.client.post("/api/distribute", json={
             "batch_id": batch_id, "plant_code": "SHANGHAI", "target_systems": ["SAP系统"],
-            "master_codes": [master_code], "instruction": "同步到上海工厂SAP",
+            "master_codes": [master_code], "instruction": "同步到上海工厂SAP", "confirmed": True,
         })
         self.assertEqual(distributed.status_code, 200, distributed.get_json())
         self.assertEqual(distributed.get_json()["success_count"], 1)
+
+        rejected = self.client.post("/api/feedback", json={
+            "batch_id": batch_id, "plant_code": "SHANGHAI", "mdm_code": master_code,
+            "accepted": False, "rating": 2, "comment": "现场规格不一致", "actor": "上海工厂数据管理员",
+        })
+        self.assertEqual(rejected.status_code, 201, rejected.get_json())
+        self.assertFalse(rejected.get_json()["closed_loop"])
+        self.assertEqual(rejected.get_json()["workflow"]["steps"][-1]["status"], "ACTION_REQUIRED")
+        invalid_boolean = self.client.post("/api/feedback", json={
+            "batch_id": batch_id, "plant_code": "SHANGHAI", "mdm_code": master_code,
+            "accepted": "false", "rating": 2,
+        })
+        self.assertEqual(invalid_boolean.status_code, 400, invalid_boolean.get_json())
 
         feedback = self.client.post("/api/feedback", json={
             "batch_id": batch_id, "plant_code": "SHANGHAI", "mdm_code": master_code,
@@ -583,6 +720,22 @@ class FlaskApiTest(unittest.TestCase):
         blocks = self.client.get(f"/api/blockchain/blocks?batch_id={batch_id}").get_json()
         self.assertEqual(blocks["blocks"][0]["event_type"], "FACTORY_FEEDBACK")
         self.assertTrue(blocks["verification"]["valid"])
+        workflow_codes = {step["step_code"] for step in feedback_payload["workflow"]["steps"]}
+        fingerprinted_codes = {
+            block["entity_id"] for block in blocks["blocks"] if block["entity_type"] == "WORKFLOW_STEP"
+        }
+        self.assertEqual(fingerprinted_codes, workflow_codes)
+        graph = self.client.get(f"/api/graph?batch_id={batch_id}&raw_limit=10").get_json()
+        audit_nodes = [node for node in graph["nodes"] if node["node_type"] == "AUDIT"]
+        self.assertEqual(len(audit_nodes), blocks["verification"]["block_count"])
+        self.assertEqual(
+            sum(edge["relation"] == "PREVIOUS_HASH" for edge in graph["edges"]),
+            blocks["verification"]["block_count"] - 1,
+        )
+        self.assertTrue(all(
+            len(node["block_hash"]) == len(node["payload_hash"]) == len(node["merkle_root"]) == 64
+            for node in audit_nodes
+        ))
 
 
 if __name__ == "__main__":

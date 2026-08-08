@@ -20,10 +20,13 @@ SAMPLE_CSV = PROJECT_DIR / "备品备件脏数据.csv"
 INDUSTRIAL_CSV = PROJECT_DIR / "industrial_parts_dirty_data.csv"
 TEST_DIR = tempfile.TemporaryDirectory(prefix="mai-master-tests-")
 os.environ["MDM_DB_PATH"] = str(Path(TEST_DIR.name) / "test.db")
+os.environ["MDM_SECURITY_MODE"] = "open"
+os.environ["MDM_SECURITY_DIR"] = TEST_DIR.name
 os.environ.pop("MDM_AUTH_PASSWORD", None)
 os.environ.pop("MDM_PRODUCTION", None)
 for api_key_name in ("DASHSCOPE_API_KEY", "ZHIPU_API_KEY", "OPENAI_API_KEY"):
-    os.environ.pop(api_key_name, None)
+    # Keep regression tests deterministic even when the developer has a local .env.
+    os.environ[api_key_name] = ""
 sys.path.insert(0, str(BACKEND_DIR))
 
 import app as backend  # noqa: E402
@@ -128,7 +131,7 @@ class FlaskApiTest(unittest.TestCase):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.get_json()["storage"], "sqlite")
-        self.assertEqual(health.get_json()["version"], "4.4")
+        self.assertEqual(health.get_json()["version"], "5.1")
         self.assertTrue(health.get_json()["ready"])
         self.assertFalse(health.get_json()["authentication"])
         root_response = self.client.get("/")
@@ -183,6 +186,9 @@ class FlaskApiTest(unittest.TestCase):
         condition_types = {item["type"] for item in search_payload["conditions"]}
         self.assertTrue({"category", "dn", "material"}.issubset(condition_types))
         self.assertEqual(search_payload["total"], 0)
+        self.assertGreater(len(search_payload["knowledge_references"]), 0)
+        self.assertIn("reference_id", search_payload["knowledge_references"][0])
+        self.assertTrue(search_payload["knowledge_retrieval"]["access_filtered"])
 
         existing = self.client.post(
             "/api/search", json={"query": "机械密封", "batch_id": batch_id, "match_mode": "and"}
@@ -272,7 +278,7 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(health["semantic"]["model"], "text-embedding-v3")
         self.assertEqual(health["semantic"]["dimension"], 1024)
         self.assertEqual(health["semantic"]["configured_models"], [])
-        self.assertEqual(health["capabilities"]["standard_rag"]["count"], 10)
+        self.assertEqual(health["capabilities"]["standard_rag"]["count"], 72)
 
         semantic = self.client.post(
             "/api/semantic",
@@ -326,7 +332,7 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(standard_search.status_code, 200, standard_search.get_json())
         self.assertEqual(standard_search.get_json()["namespace"], "standard_kb")
         self.assertEqual(len(standard_search.get_json()["results"]), 3)
-        self.assertEqual(self.client.get("/api/standards/stats").get_json()["count"], 10)
+        self.assertEqual(self.client.get("/api/standards/stats").get_json()["count"], 72)
 
         capabilities = self.client.get("/api/agent/capabilities")
         self.assertEqual(capabilities.status_code, 200)
@@ -482,6 +488,46 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(result["logs"][0]["payload"]["brand"], "SKF")
         self.assertEqual(result["logs"][0]["payload"]["model"], "6312")
         self.assertRegex(result["logs"][0]["payload"]["payload_hash"], r"^[0-9a-f]{64}$")
+
+    def test_unified_agent_routes_and_executes_only_selected_distribution_task(self):
+        response = self.client.post("/api/batches", json={
+            "filename": "agent-task-selection.json", "plant_code": "GROUP", "records": [
+                {"material_code": "A-01", "system_source": "SAP", "material_name": "SKF 6312深沟球轴承"},
+                {"material_code": "A-02", "system_source": "EAM", "material_name": "SKF 6314深沟球轴承"},
+                {"material_code": "A-03", "system_source": "ERP", "material_name": "SKF 6310深沟球轴承"},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        batch_id = response.get_json()["batch"]["batch_id"]
+        instruction = "把品牌SKF的轴承发往ERP系统上海厂"
+
+        route = self.client.post("/api/agent/query", json={"text": instruction}).get_json()
+        self.assertEqual(route["intent"], "DISTRIBUTE")
+        self.assertEqual(route["next_endpoint"], "/api/intent")
+
+        plan_response = self.client.post("/api/intent", json={"batch_id": batch_id, "text": instruction})
+        self.assertEqual(plan_response.status_code, 200, plan_response.get_json())
+        plan = plan_response.get_json()
+        self.assertGreaterEqual(len(plan["tasks"]), 2)
+        self.assertEqual(plan["selection_mode"], "EXPLICIT")
+        self.assertTrue(plan["selection_required"])
+        selected = next(task for task in plan["tasks"] if task["eligible"])
+
+        executed = self.client.post("/api/distribute", json={
+            "batch_id": batch_id,
+            "instruction": instruction,
+            "confirmed": True,
+            "target_systems": plan["target_systems"],
+            "target_plants": plan["target_plants"],
+            "selected_master_codes": [selected["mdm_code"]],
+            "selected_tasks": [selected],
+        })
+        self.assertEqual(executed.status_code, 200, executed.get_json())
+        result = executed.get_json()
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["selected_task_count"], 1)
+        self.assertEqual(len(result["logs"]), 1)
+        self.assertEqual(result["logs"][0]["mdm_code"], selected["mdm_code"])
 
     def test_group_golden_master_can_be_distributed_to_factories(self):
         response = self.client.post(

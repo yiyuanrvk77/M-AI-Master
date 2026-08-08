@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import base64
 import binascii
+from difflib import SequenceMatcher
 import io
 import importlib.util
 import json
@@ -22,8 +23,9 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote
@@ -33,8 +35,12 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, g, has_request_context, jsonify, request, send_from_directory, session
 from sklearn.ensemble import IsolationForest
+
+from enterprise_rag import EnterpriseRAG, RAGConfig
+from enterprise_governance import EnterpriseGovernance
+from enterprise_security import EnterpriseSecurity, sanitize_audit_details
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -78,7 +84,7 @@ FRONTEND_DIR = _config_path("MDM_FRONTEND_DIR", BASE_DIR)
 FRONTEND_FILE = os.environ.get("MDM_FRONTEND_FILE", "index.html")
 DB_PATH = _config_path("MDM_DB_PATH", BASE_DIR / "mdm_data.db")
 MAX_RECORDS = int(os.environ.get("MDM_MAX_RECORDS", "10000"))
-APP_VERSION = "4.4"
+APP_VERSION = "5.1"
 AUTH_USER = os.environ.get("MDM_AUTH_USER", "admin").strip() or "admin"
 AUTH_PASSWORD = os.environ.get("MDM_AUTH_PASSWORD", "")
 
@@ -97,19 +103,153 @@ if os.environ.get("MDM_LOG_DIR"):
     logger.addHandler(file_handler)
 
 
+def _required_permission(path: str, method: str) -> str | None:
+    """Map the existing API surface to server-enforced enterprise permissions."""
+    method = method.upper()
+    if path in {"/api/live", "/api/health", "/api/auth/login"} or not path.startswith("/api/"):
+        return None
+    if path.startswith("/api/auth/"):
+        return "data.read"
+    if path.startswith("/api/admin/users"):
+        return "security.manage"
+    if path.startswith("/api/admin/standards") or path.startswith("/api/knowledge"):
+        return "knowledge.manage" if method != "GET" else "data.read"
+    if path.startswith("/api/security/audit/verify"):
+        return "audit.verify"
+    if path.startswith("/api/security/audit") or path.startswith("/api/blockchain"):
+        return "audit.read"
+    if path.startswith("/api/compliance"):
+        return "compliance.manage" if method != "GET" else "compliance.read"
+    if path.startswith("/api/governance/controls"):
+        return "compliance.manage" if method != "GET" else "data.read"
+    if path.startswith("/api/governance/issues"):
+        return "review.decide" if method != "GET" else "data.read"
+    if path.startswith("/api/governance/catalog"):
+        return "data.read"
+    if method == "DELETE":
+        return "data.purge"
+    if path == "/api/vectors/rebuild" or (path == "/api/ocr/install" and method != "GET"):
+        return "knowledge.manage"
+    if path == "/api/distribute":
+        return "distribution.execute"
+    if path == "/api/feedback":
+        return "feedback.write"
+    if path.startswith("/api/reviews") and method != "GET":
+        return "review.decide"
+    if path == "/api/lifecycle" and method == "POST":
+        return "lifecycle.create"
+    if path.startswith("/api/lifecycle/") and method == "PATCH":
+        return None  # Transition-specific permission is checked after reading current state.
+    if path in {"/api/batches", "/api/upload", "/api/govern", "/api/governance", "/api/demo/run", "/api/ocr"}:
+        return "data.ingest"
+    if method != "GET" and any(path.startswith(prefix) for prefix in (
+        "/api/semantic", "/api/classify", "/api/agent", "/api/intent", "/api/explain",
+        "/api/search", "/api/standards/search", "/api/vectors/search",
+    )):
+        return "ai.use"
+    return "data.read"
+
+
+def _security_response(message: str, status: int, code: str):
+    response = jsonify({"error": message, "code": code, "trace_id": getattr(g, "trace_id", "")})
+    response.status_code = status
+    return response
+
+
 @app.before_request
 def attach_trace_context():
     g.trace_id = request.headers.get("X-Trace-Id") or f"TRC-{uuid.uuid4().hex[:16].upper()}"
     g.request_started = time.perf_counter()
-    if AUTH_PASSWORD and request.path != "/api/health":
+    g.security_event_recorded = False
+    g.data_classification = "INTERNAL"
+    g.external_ai_allowed = True
+    security = globals().get("enterprise_security")
+    if security is None:
+        return None
+    if security.mode == "open":
+        if AUTH_PASSWORD and request.path not in {"/api/live", "/api/health"}:
+            auth = request.authorization
+            valid_user = bool(auth) and hmac.compare_digest(auth.username or "", AUTH_USER)
+            valid_password = bool(auth) and hmac.compare_digest(auth.password or "", AUTH_PASSWORD)
+            if not (valid_user and valid_password):
+                response = _security_response("authentication required", 401, "AUTH_REQUIRED")
+                response.headers["WWW-Authenticate"] = 'Basic realm="M-AI Master", charset="UTF-8"'
+                return response
+        g.principal = security.resolve_principal()
+        return None
+    if security.mode == "basic":
+        if not AUTH_PASSWORD or request.path in {"/api/live", "/api/health"} or not request.path.startswith("/api/"):
+            g.principal = security.open_principal()
+            return None
         auth = request.authorization
         valid_user = bool(auth) and hmac.compare_digest(auth.username or "", AUTH_USER)
         valid_password = bool(auth) and hmac.compare_digest(auth.password or "", AUTH_PASSWORD)
         if not (valid_user and valid_password):
-            response = jsonify({"error": "authentication required", "trace_id": g.trace_id})
-            response.status_code = 401
+            response = _security_response("authentication required", 401, "AUTH_REQUIRED")
             response.headers["WWW-Authenticate"] = 'Basic realm="M-AI Master", charset="UTF-8"'
             return response
+        g.principal = security.open_principal(username=AUTH_USER, display_name="Legacy administrator")
+        return None
+
+    g.principal = security.resolve_principal()
+    public = request.path in {"/api/live", "/api/health", "/api/auth/login"} or not request.path.startswith("/api/")
+    if public:
+        return None
+    if not g.principal:
+        return _security_response("please sign in", 401, "AUTH_REQUIRED")
+    scope_valid, scope_error = security.validate_requested_scope(g.principal)
+    if not scope_valid:
+        security.record_event(
+            "AUTHORIZATION_DENIED", "DENIED", request.path,
+            {"reason": scope_error, "method": request.method}, g.principal, g.trace_id, request.remote_addr or "",
+        )
+        g.security_event_recorded = True
+        return _security_response(scope_error, 403, "PLANT_SCOPE_DENIED")
+    payload = request.get_json(silent=True) if request.is_json else {}
+    payload = payload if isinstance(payload, dict) else {}
+    requested_classification = _clean_value(
+        payload.get("data_classification") or request.form.get("data_classification")
+        or request.args.get("data_classification")
+    ).upper()
+    batch_id = _clean_value(payload.get("batch_id") or request.form.get("batch_id") or request.args.get("batch_id"))
+    if batch_id and not requested_classification:
+        try:
+            with db_connect() as conn:
+                row = conn.execute(
+                    "SELECT data_classification FROM batches WHERE batch_id = ?", (batch_id,)
+                ).fetchone()
+            requested_classification = row["data_classification"] if row else ""
+        except sqlite3.Error:
+            requested_classification = ""
+    if requested_classification:
+        if requested_classification not in EnterpriseSecurity.DATA_CLASSIFICATIONS:
+            return _security_response("unsupported data_classification", 400, "CLASSIFICATION_INVALID")
+        g.data_classification = requested_classification
+    g.external_ai_allowed = bool(
+        EnterpriseSecurity.DATA_CLASSIFICATIONS[g.data_classification]["external_ai"]
+    )
+    g.request_data_owner = _clean_value(payload.get("data_owner") or request.form.get("data_owner")) or g.principal["display_name"]
+    g.request_processing_purpose = _clean_value(
+        payload.get("processing_purpose") or request.form.get("processing_purpose")
+    ) or "物料主数据治理"
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.path != "/api/auth/login":
+        if not security.csrf_valid():
+            security.record_event(
+                "CSRF_REJECTED", "DENIED", request.path, {"method": request.method},
+                g.principal, g.trace_id, request.remote_addr or "",
+            )
+            g.security_event_recorded = True
+            return _security_response("missing or invalid CSRF token", 403, "CSRF_INVALID")
+    permission = _required_permission(request.path, request.method)
+    if permission and not security.has_permission(g.principal, permission):
+        security.record_event(
+            "AUTHORIZATION_DENIED", "DENIED", request.path,
+            {"permission": permission, "method": request.method}, g.principal, g.trace_id,
+            request.remote_addr or "",
+        )
+        g.security_event_recorded = True
+        return _security_response(f"permission required: {permission}", 403, "PERMISSION_DENIED")
+    return None
 
 
 @app.after_request
@@ -118,8 +258,17 @@ def attach_trace_headers(response):
     response.headers["X-Trace-Id"] = getattr(g, "trace_id", "")
     response.headers["X-Response-Time-Ms"] = str(elapsed_ms)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(), payment=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Content-Security-Policy-Report-Only"] = (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    )
+    if request.is_secure or os.environ.get("MDM_FORCE_HTTPS") == "1":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.path == "/":
         response.headers["Cache-Control"] = "no-store"
     if request.path.startswith("/api/"):
@@ -129,6 +278,21 @@ def attach_trace_headers(response):
             request.method, request.path, response.status_code, elapsed_ms,
             getattr(g, "trace_id", ""), request.remote_addr or "-",
         )
+    security = globals().get("enterprise_security")
+    if (
+        security is not None and security.mode == "enterprise"
+        and request.path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.path != "/api/auth/login" and not getattr(g, "security_event_recorded", False)
+        and getattr(g, "principal", None)
+    ):
+        try:
+            security.record_event(
+                "API_MUTATION", "SUCCESS" if response.status_code < 400 else "FAILED", request.path,
+                {"method": request.method, "status": response.status_code}, g.principal,
+                getattr(g, "trace_id", ""), request.remote_addr or "",
+            )
+        except Exception:
+            logger.exception("failed to append enterprise security audit event")
     return response
 
 
@@ -212,9 +376,29 @@ def _normalize_plant_code(value, default: str = "GROUP") -> str:
         return default
     alias = PLANT_ALIASES.get(raw.lower())
     if alias:
-        return alias
-    code = re.sub(r"[^A-Z0-9_-]", "", raw.upper())
-    return code or default
+        code = alias
+    else:
+        code = re.sub(r"[^A-Z0-9_-]", "", raw.upper()) or default
+    return code
+
+
+def _effective_plant_code(value=None, default: str = "GROUP") -> str:
+    """Resolve a request plant without allowing a session identity to widen its scope."""
+    code = _normalize_plant_code(value, default)
+    security = globals().get("enterprise_security")
+    if has_request_context() and security is not None and security.mode == "enterprise":
+        principal = getattr(g, "principal", None)
+        if principal and principal.get("plant_code") != "GROUP":
+            return principal["plant_code"]
+    return code
+
+
+def _current_actor(fallback: str = "system") -> str:
+    security = globals().get("enterprise_security")
+    principal = getattr(g, "principal", None) if has_request_context() else None
+    if security is not None and security.mode == "enterprise" and principal:
+        return f"{principal['display_name']} ({principal['username']})"
+    return _clean_value(fallback) or "system"
 
 
 def _connector_profile(system_source: str) -> dict:
@@ -369,7 +553,7 @@ def normalize_records(
         record["_extra"] = extra
         record["system_source"] = record["system_source"] or "CSV导入"
         record["create_time"] = record["create_time"] or imported_at
-        record["plant_code"] = _normalize_plant_code(record.get("plant_code"), default_plant_code)
+        record["plant_code"] = _effective_plant_code(record.get("plant_code"), default_plant_code)
         if not (record["material_code"] or record["material_name"] or record["description"]):
             continue
         records.append(record)
@@ -500,7 +684,12 @@ def init_db() -> None:
                 semantic_method TEXT,
                 semantic_model TEXT,
                 semantic_dimension INTEGER,
-                semantic_warning TEXT
+                semantic_warning TEXT,
+                data_classification TEXT NOT NULL DEFAULT 'INTERNAL',
+                data_owner TEXT,
+                processing_purpose TEXT,
+                retention_until TEXT,
+                legal_hold INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -704,6 +893,23 @@ def init_db() -> None:
                 UNIQUE(batch_id, height),
                 FOREIGN KEY (batch_id) REFERENCES batches(batch_id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS retention_policies (
+                data_classification TEXT PRIMARY KEY,
+                retention_days INTEGER NOT NULL,
+                external_ai_allowed INTEGER NOT NULL DEFAULT 0,
+                description TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS legal_holds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                released_by TEXT,
+                released_at TEXT
+            );
             """
         )
 
@@ -712,6 +918,9 @@ def init_db() -> None:
             "batches": {
                 "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'", "semantic_method": "TEXT",
                 "semantic_model": "TEXT", "semantic_dimension": "INTEGER", "semantic_warning": "TEXT",
+                "data_classification": "TEXT NOT NULL DEFAULT 'INTERNAL'", "data_owner": "TEXT",
+                "processing_purpose": "TEXT", "retention_until": "TEXT",
+                "legal_hold": "INTEGER NOT NULL DEFAULT 0",
             },
             "records": {"create_time": "TEXT", "plant_code": "TEXT NOT NULL DEFAULT 'GROUP'"},
             "masters": {
@@ -756,8 +965,24 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_vectors_entity ON vector_embeddings(entity_type, entity_id);
             CREATE INDEX IF NOT EXISTS idx_feedback_batch ON plant_feedback(batch_id, plant_code);
             CREATE INDEX IF NOT EXISTS idx_audit_batch_height ON audit_blocks(batch_id, height);
+            CREATE INDEX IF NOT EXISTS idx_batches_retention ON batches(legal_hold, retention_until);
+            CREATE INDEX IF NOT EXISTS idx_legal_holds_batch ON legal_holds(batch_id, active);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_vectors_global_unique
+                ON vector_embeddings(namespace, IFNULL(batch_id, ''), entity_type, entity_id, provider, model);
             """
         )
+        now = _utc_now()
+        for level, policy in EnterpriseSecurity.DATA_CLASSIFICATIONS.items():
+            conn.execute(
+                """INSERT INTO retention_policies
+                   (data_classification, retention_days, external_ai_allowed, description, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(data_classification) DO NOTHING""",
+                (level, policy["default_retention_days"], int(policy["external_ai"]),
+                 f"Default {level.lower()} data lifecycle policy", now),
+            )
+        enterprise_security.init_schema(conn)
+        enterprise_governance.init_schema(conn)
         _migrate_legacy_batches(conn)
         conn.execute("UPDATE lifecycle SET status = UPPER(status) WHERE status IS NOT NULL")
         for table in ("batches", "records", "mappings", "lifecycle", "distribution_logs"):
@@ -769,6 +994,21 @@ def init_db() -> None:
         # Product upgrades must make historical batches usable without forcing a CSV re-upload.
         for batch in conn.execute("SELECT batch_id, record_count, filename FROM batches ORDER BY id").fetchall():
             batch_id = batch["batch_id"]
+            issue_meta = enterprise_governance.capture_batch_issues(conn, batch_id)
+            quality_row = conn.execute("SELECT report FROM quality_reports WHERE batch_id = ?", (batch_id,)).fetchone()
+            if quality_row:
+                report = json.loads(quality_row["report"] or "{}")
+                report["issue_workflow"] = issue_meta
+                report.setdefault("measurement", {
+                    "framework": "DAMA-DMBOK2 Rev 适配质量度量",
+                    "sample_size": int(batch["record_count"] or 0),
+                    "accuracy_is_proxy": True,
+                    "accuracy_note": "accuracy 为结构异常代理指标，不等同于人工真值集准确率。",
+                })
+                conn.execute(
+                    "UPDATE quality_reports SET report = ? WHERE batch_id = ?",
+                    (json.dumps(report, ensure_ascii=False), batch_id),
+                )
             if not conn.execute("SELECT 1 FROM workflow_steps WHERE batch_id = ? LIMIT 1", (batch_id,)).fetchone():
                 _initialize_workflow(conn, batch_id)
                 master_count = conn.execute("SELECT COUNT(*) FROM batch_masters WHERE batch_id = ?", (batch_id,)).fetchone()[0]
@@ -1248,6 +1488,9 @@ class SemanticEngine:
     def _request_embeddings(
         self, texts: list[str], model_key: str = "qwen", text_type: str = "document"
     ) -> list[list[float]] | None:
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            logger.info("external embedding blocked by data classification trace_id=%s", getattr(g, "trace_id", ""))
+            return None
         config = self.MODELS.get(model_key)
         api_key = self.api_keys.get(model_key, "")
         if not config or not api_key or not texts:
@@ -1306,6 +1549,13 @@ class SemanticEngine:
 
     def resolve_embeddings(self, texts: list[str], preferred_model: str = "qwen") -> tuple[list[list[float]] | None, dict]:
         preferred = preferred_model if preferred_model in self.MODELS else "qwen"
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            requested = self.MODELS[preferred]
+            return None, {
+                "method": "规则增强 Jaccard 字符相似度（数据不出域）", "model": requested["model"],
+                "provider": preferred, "dimension": None, "embedding_active": False,
+                "warning": f"{getattr(g, 'data_classification', 'RESTRICTED')} 数据按策略禁止发送至外部Embedding服务。",
+            }
         order = [preferred] + [key for key in ("qwen", "zhipu", "openai") if key != preferred]
         attempted = []
         for model_key in order:
@@ -1349,6 +1599,13 @@ class SemanticEngine:
         self, texts: list[str], preferred_model: str = "qwen", text_type: str = "document"
     ) -> tuple[list[list[float]], dict]:
         """Resolve embeddings for persistence; unlike pairwise demo similarity, this always returns vectors."""
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            return [self.local_embedding(text) for text in texts], {
+                "provider": "local", "model": "feature-hash-v1", "dimension": 384,
+                "method": "离线特征哈希向量（数据不出域）",
+                "warning": f"{getattr(g, 'data_classification', 'RESTRICTED')} 数据按策略仅使用本地向量。",
+                "remote": False,
+            }
         if preferred_model == "local":
             return [self.local_embedding(text) for text in texts], {
                 "provider": "local", "model": "feature-hash-v1", "dimension": 384,
@@ -1552,6 +1809,9 @@ class OCREngine:
                 temp_path.unlink(missing_ok=True)
 
     def _qwen_vl_recognize(self, image_bytes: bytes, mime_type: str) -> str:
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            logger.info("external vision model blocked by data classification trace_id=%s", getattr(g, "trace_id", ""))
+            return ""
         if not self.qwen_key:
             return ""
         data_uri = f"data:{mime_type or 'image/jpeg'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
@@ -1898,8 +2158,13 @@ ocr_installer = OCRInstallManager()
 
 
 def _seed_standard_kb(conn: sqlite3.Connection) -> dict:
-    """Build an independent, always-available standard knowledge vector namespace."""
-    conn.execute("DELETE FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL")
+    """Build the legacy 10-entry namespace only when no legacy index exists."""
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
+    ).fetchone()[0]
+    if existing:
+        return {"namespace": "standard_kb", "indexed": existing, "provider": "local",
+                "model": "feature-hash-v1", "dimension": 384, "idempotent": True}
     now = _utc_now()
     for item in STANDARD_KB:
         content = f"{item['category']} {item['title']} {item['keywords']} {item['code_prefix']}"
@@ -1919,6 +2184,24 @@ def _seed_standard_kb(conn: sqlite3.Connection) -> dict:
 
 
 def _search_standard_kb(conn: sqlite3.Connection, query: str, top_k: int = 3) -> list[dict]:
+    rag = globals().get("enterprise_rag")
+    if rag is not None:
+        try:
+            principal = getattr(g, "principal", None) if has_request_context() else None
+            role = (principal or {}).get("role", "GROUP_ADMIN")
+            clearance = {
+                "GROUP_ADMIN": "RESTRICTED", "AUDITOR": "RESTRICTED",
+                "GROUP_APPROVER": "CONFIDENTIAL", "PLANT_STEWARD": "INTERNAL",
+            }.get(role, "INTERNAL")
+            plant_code = (principal or {}).get("plant_code", "GROUP")
+            payload = rag.search(
+                query, top_k=top_k, plant_code=plant_code, clearance=clearance,
+                trace_id=getattr(g, "trace_id", "") if has_request_context() else "",
+                actor=(principal or {}).get("username", "system"),
+            )
+            return payload["results"]
+        except (LookupError, PermissionError, ValueError) as exc:
+            logger.warning("enterprise RAG unavailable; using legacy standard index: %s", exc)
     rows = conn.execute(
         """SELECT * FROM vector_embeddings WHERE namespace = 'standard_kb'
            AND batch_id IS NULL AND provider = 'local' AND model = 'feature-hash-v1'"""
@@ -2229,6 +2512,11 @@ class QwenGovernanceAgent:
 
     def plan(self, task: str, context: dict) -> tuple[dict, dict]:
         fallback = self.fallback_plan(task, context)
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            return fallback, {
+                "active": False, "model": self.model, "method": "确定性Agent编排（数据不出域）",
+                "warning": f"{getattr(g, 'data_classification', 'RESTRICTED')} 数据禁止发送至外部大模型。",
+            }
         if not self.api_key:
             return fallback, {"active": False, "model": self.model, "method": "确定性Agent编排（降级）",
                               "warning": "DASHSCOPE_API_KEY未配置，已使用本地可解释编排。"}
@@ -2283,6 +2571,12 @@ class QwenGovernanceAgent:
     def explain(self, evidence: dict, use_llm: bool = True) -> tuple[str, dict]:
         fallback = self.fallback_explanation(evidence)
         evidence_hash = hashlib.sha256(_canonical_json(evidence).encode("utf-8")).hexdigest()
+        if has_request_context() and not getattr(g, "external_ai_allowed", True):
+            return fallback, {
+                "active": False, "model": self.model, "method": "事实模板解释（数据不出域）",
+                "warning": f"{getattr(g, 'data_classification', 'RESTRICTED')} 数据禁止发送至外部大模型。",
+                "cached": False, "evidence_hash": evidence_hash,
+            }
         if not use_llm or not self.api_key:
             return fallback, {
                 "active": False, "model": self.model, "method": "事实模板解释（降级）",
@@ -2589,6 +2883,18 @@ def _batch_id() -> str:
 def persist_batch(filename: str, encoding: str, records: list[dict], preferred_model: str = "qwen") -> dict:
     batch_id = _batch_id()
     created_at = _utc_now()
+    classification = getattr(g, "data_classification", "INTERNAL") if has_request_context() else "INTERNAL"
+    policy = EnterpriseSecurity.DATA_CLASSIFICATIONS.get(
+        classification, EnterpriseSecurity.DATA_CLASSIFICATIONS["INTERNAL"]
+    )
+    retention_until = (datetime.now(timezone.utc) + timedelta(
+        days=int(policy["default_retention_days"])
+    )).isoformat(timespec="seconds")
+    data_owner = getattr(g, "request_data_owner", "M-AI Master") if has_request_context() else "M-AI Master"
+    processing_purpose = (
+        getattr(g, "request_processing_purpose", "物料主数据治理")
+        if has_request_context() else "物料主数据治理"
+    )
     masters, reviews, mappings, semantic_meta = engine.govern(records, semantic_engine, preferred_model)
     plant_codes = sorted({_normalize_plant_code(record.get("plant_code")) for record in records})
     batch_plant = plant_codes[0] if len(plant_codes) == 1 else "MULTI"
@@ -2644,10 +2950,12 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
         conn.execute(
             """INSERT INTO batches
                (batch_id, filename, created_at, encoding, record_count, plant_code,
-                semantic_method, semantic_model, semantic_dimension, semantic_warning)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                semantic_method, semantic_model, semantic_dimension, semantic_warning,
+                data_classification, data_owner, processing_purpose, retention_until, legal_hold)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
             (batch_id, filename or "uploaded.csv", created_at, encoding or "utf-8", len(records), batch_plant,
-             semantic_meta["method"], semantic_meta["model"], semantic_meta["dimension"], semantic_meta["warning"]),
+             semantic_meta["method"], semantic_meta["model"], semantic_meta["dimension"], semantic_meta["warning"],
+             classification, data_owner, processing_purpose, retention_until),
         )
         record_ids = []
         record_lookup = {}
@@ -2726,6 +3034,15 @@ def persist_batch(filename: str, encoding: str, records: list[dict], preferred_m
                  json.dumps(review["candidates"], ensure_ascii=False), review["plant_codes"], review["status"]),
             )
             review["id"] = cursor.lastrowid
+        governance_issue_meta = enterprise_governance.capture_batch_issues(conn, batch_id)
+        quality_report["issue_workflow"] = governance_issue_meta
+        quality_report["measurement"] = {
+            "framework": "DAMA-DMBOK2 Rev 适配质量度量",
+            "measured_at": created_at,
+            "sample_size": len(records),
+            "accuracy_is_proxy": True,
+            "accuracy_note": "accuracy 为结构异常代理指标，不等同于人工真值集准确率。",
+        }
         conn.execute(
             "INSERT INTO quality_reports (batch_id, report, generated_at) VALUES (?, ?, ?)",
             (batch_id, json.dumps(quality_report, ensure_ascii=False), created_at),
@@ -2788,7 +3105,7 @@ def _master_distributable_to_plant(value, requested_plant: str) -> bool:
 
 
 def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) -> dict:
-    requested_plant = _normalize_plant_code(plant_code, "") if plant_code else ""
+    requested_plant = _effective_plant_code(plant_code, "") if plant_code else _effective_plant_code("", "")
     with db_connect() as conn:
         batch_id = batch_id or _latest_batch_id(conn)
         if not batch_id:
@@ -2928,6 +3245,336 @@ def get_batch_state(batch_id: str | None = None, plant_code: str | None = None) 
         }
 
 
+@app.get("/api/live")
+def live_check():
+    """Public liveness endpoint with no infrastructure or tenant details."""
+    return jsonify({"status": "ok", "version": APP_VERSION})
+
+
+@app.post("/api/auth/login")
+def auth_login():
+    payload = request.get_json(silent=True) or {}
+    username = _clean_value(payload.get("username"))
+    password = str(payload.get("password") or "")
+    if not username or not password:
+        return jsonify({"error": "username and password are required", "code": "LOGIN_INPUT_REQUIRED"}), 400
+    if enterprise_security.mode == "open":
+        principal = enterprise_security.open_principal()
+        csrf_token = enterprise_security.start_session(principal)
+        return jsonify({"principal": principal, "csrf_token": csrf_token, "security_mode": "open"})
+    if enterprise_security.mode == "basic":
+        valid = hmac.compare_digest(username, AUTH_USER) and bool(AUTH_PASSWORD) and hmac.compare_digest(password, AUTH_PASSWORD)
+        principal = enterprise_security.open_principal(username=AUTH_USER, display_name="Legacy administrator") if valid else None
+        error = "" if valid else "invalid username or password"
+    else:
+        principal, error = enterprise_security.authenticate(username, password)
+    if not principal:
+        enterprise_security.record_event(
+            "LOGIN_FAILED", "DENIED", "/api/auth/login", {"username": username, "reason": error},
+            None, g.trace_id, request.remote_addr or "",
+        )
+        g.security_event_recorded = True
+        return jsonify({"error": error or "invalid username or password", "code": "LOGIN_FAILED"}), 401
+    csrf_token = enterprise_security.start_session(principal)
+    enterprise_security.record_event(
+        "LOGIN_SUCCEEDED", "SUCCESS", "/api/auth/login", {}, principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({
+        "principal": principal, "csrf_token": csrf_token, "security_mode": enterprise_security.mode,
+        "password_change_recommended": enterprise_security.initial_credentials_path.is_file(),
+    })
+
+
+@app.get("/api/auth/me")
+def auth_me():
+    principal = getattr(g, "principal", None) or enterprise_security.resolve_principal()
+    if not principal:
+        return jsonify({"error": "please sign in", "code": "AUTH_REQUIRED"}), 401
+    allowed_plants = PLANTS if principal["plant_code"] == "GROUP" else {
+        principal["plant_code"]: PLANTS.get(principal["plant_code"], principal["plant_code"])
+    }
+    return jsonify({
+        "principal": principal, "csrf_token": session.get("csrf_token", ""),
+        "security_mode": enterprise_security.mode, "allowed_plants": allowed_plants,
+        "password_change_recommended": enterprise_security.initial_credentials_path.is_file(),
+    })
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    principal = getattr(g, "principal", None)
+    enterprise_security.record_event(
+        "LOGOUT", "SUCCESS", "/api/auth/logout", {}, principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    session.clear()
+    return jsonify({"signed_out": True})
+
+
+@app.post("/api/auth/change-password")
+def auth_change_password():
+    if enterprise_security.mode != "enterprise":
+        return jsonify({"error": "password changes require enterprise security mode"}), 409
+    payload = request.get_json(silent=True) or {}
+    ok, error = enterprise_security.change_password(
+        g.principal, str(payload.get("current_password") or ""), str(payload.get("new_password") or ""),
+    )
+    if not ok:
+        return jsonify({"error": error}), 400
+    enterprise_security.record_event(
+        "PASSWORD_CHANGED", "SUCCESS", "/api/auth/change-password", {}, g.principal,
+        g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({"changed": True, "csrf_token": session.get("csrf_token", "")})
+
+
+@app.route("/api/admin/users", methods=["GET", "POST"])
+def admin_users():
+    if request.method == "GET":
+        return jsonify({"users": enterprise_security.list_users(), "roles": enterprise_security.public_roles()})
+    payload = request.get_json(silent=True) or {}
+    user, error = enterprise_security.create_user(payload, g.principal)
+    if not user:
+        return jsonify({"error": error}), 400
+    enterprise_security.record_event(
+        "USER_CREATED", "SUCCESS", f"security_user:{user['id']}",
+        {key: value for key, value in user.items() if key != "created_by"}, g.principal,
+        g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify(user), 201
+
+
+@app.get("/api/security/audit")
+def security_audit_events():
+    try:
+        limit = min(500, max(1, int(request.args.get("limit", 100))))
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    with db_connect() as conn:
+        rows = _rows(
+            conn,
+            """SELECT height, event_type, actor, role, plant_code, resource, outcome, details_json,
+                      trace_id, client_ip, previous_hash, event_hash, created_at
+                 FROM security_events ORDER BY height DESC LIMIT ?""",
+            (limit,),
+        )
+    for row in rows:
+        row["details"] = json.loads(row.pop("details_json") or "{}")
+        if g.principal.get("role") != "GROUP_ADMIN":
+            row["client_ip"] = "masked"
+    return jsonify({"events": rows, "count": len(rows), "verification": enterprise_security.verify_events()})
+
+
+@app.get("/api/security/audit/verify")
+def security_audit_verify():
+    return jsonify(enterprise_security.verify_events())
+
+
+@app.get("/api/governance/catalog")
+def governance_catalog():
+    """Return the DMBOK control map, business metadata, quality rules, and RACI."""
+    with db_connect() as conn:
+        catalog = enterprise_governance.catalog(conn)
+        if request.args.get("include_issues") == "1":
+            catalog["issue_summary"] = enterprise_governance.issue_summary(
+                conn,
+                _clean_value(request.args.get("batch_id")) or None,
+                _effective_plant_code(request.args.get("plant_code")),
+            )
+        else:
+            catalog["issue_summary"] = {
+                "issues": [], "count": 0, "status_counts": {},
+                "dimension_counts": {}, "overdue_count": 0,
+            }
+    catalog["trace_id"] = g.trace_id
+    return jsonify(catalog)
+
+
+@app.get("/api/governance/issues")
+def governance_issues():
+    batch_id = _clean_value(request.args.get("batch_id")) or None
+    requested_plant = _effective_plant_code(request.args.get("plant_code"))
+    with db_connect() as conn:
+        result = enterprise_governance.issue_summary(conn, batch_id, requested_plant)
+    result.update({"batch_id": batch_id, "plant_code": requested_plant, "trace_id": g.trace_id})
+    return jsonify(result)
+
+
+@app.patch("/api/governance/issues/<issue_id>")
+def update_governance_issue(issue_id: str):
+    payload = request.get_json(silent=True) or {}
+    status = _clean_value(payload.get("status")).upper()
+    if not status:
+        return jsonify({"error": "status is required"}), 400
+    try:
+        with db_connect() as conn:
+            issue = enterprise_governance.update_issue(
+                conn, issue_id, status, _clean_value(payload.get("resolution")),
+                _current_actor(), _effective_plant_code(payload.get("plant_code")),
+            )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    if not issue:
+        return jsonify({"error": "quality issue not found"}), 404
+    enterprise_security.record_event(
+        "QUALITY_ISSUE_UPDATED", "SUCCESS", f"quality-issue:{issue_id}",
+        {"status": status, "batch_id": issue["batch_id"], "record_id": issue["record_id"]},
+        g.principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({"issue": issue, "trace_id": g.trace_id})
+
+
+@app.patch("/api/governance/controls/<control_code>")
+def assess_governance_control(control_code: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        with db_connect() as conn:
+            control = enterprise_governance.assess_control(
+                conn, control_code.upper(), payload, g.principal["username"]
+            )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not control:
+        return jsonify({"error": "governance control not found"}), 404
+    enterprise_security.record_event(
+        "GOVERNANCE_CONTROL_ASSESSED", "SUCCESS", f"control:{control_code.upper()}",
+        {"status": control["status"], "maturity_level": control["maturity_level"]},
+        g.principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({"control": control, "trace_id": g.trace_id})
+
+
+@app.get("/api/compliance/status")
+def compliance_status():
+    summary = enterprise_security.compliance_summary()
+    with db_connect() as conn:
+        summary["retention_policies"] = _rows(conn, "SELECT * FROM retention_policies ORDER BY retention_days")
+        catalog = enterprise_governance.catalog(conn)
+        summary["dmbok_control_domains"] = catalog["domains"]
+        summary["metadata_element_count"] = len(catalog["metadata_catalog"])
+        summary["active_quality_rule_count"] = sum(1 for rule in catalog["quality_rules"] if rule["active"])
+        issue_summary = enterprise_governance.issue_summary(
+            conn, plant_code=_effective_plant_code(request.args.get("plant_code"))
+        )
+        issue_summary.pop("issues", None)
+        summary["quality_issue_summary"] = issue_summary
+    summary["ai_egress_policy"] = {
+        level: {"external_ai_allowed": policy["external_ai"]}
+        for level, policy in EnterpriseSecurity.DATA_CLASSIFICATIONS.items()
+    }
+    summary["claim"] = "已形成安全控制与审计证据；不等同于通过等保、数据合规或法律认证。"
+    return jsonify(summary)
+
+
+@app.patch("/api/compliance/batches/<batch_id>")
+def update_batch_compliance(batch_id: str):
+    payload = request.get_json(silent=True) or {}
+    classification = _clean_value(payload.get("data_classification")).upper()
+    if classification and classification not in EnterpriseSecurity.DATA_CLASSIFICATIONS:
+        return jsonify({"error": "unsupported data_classification",
+                        "supported": list(EnterpriseSecurity.DATA_CLASSIFICATIONS)}), 400
+    retention_until = _clean_value(payload.get("retention_until"))
+    if retention_until:
+        try:
+            datetime.fromisoformat(retention_until.replace("Z", "+00:00"))
+        except ValueError:
+            return jsonify({"error": "retention_until must be an ISO-8601 timestamp"}), 400
+    legal_hold_value = payload.get("legal_hold")
+    if legal_hold_value is not None and not isinstance(legal_hold_value, bool):
+        return jsonify({"error": "legal_hold must be a JSON boolean"}), 400
+    with db_connect() as conn:
+        batch = conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({"error": "batch not found"}), 404
+        if g.principal["plant_code"] != "GROUP" and batch["plant_code"] != g.principal["plant_code"]:
+            return jsonify({"error": "batch is outside the identity plant scope"}), 403
+        values = {
+            "data_classification": classification or batch["data_classification"],
+            "data_owner": _clean_value(payload.get("data_owner")) if "data_owner" in payload else batch["data_owner"],
+            "processing_purpose": _clean_value(payload.get("processing_purpose")) if "processing_purpose" in payload else batch["processing_purpose"],
+            "retention_until": retention_until if "retention_until" in payload else batch["retention_until"],
+            "legal_hold": int(legal_hold_value) if legal_hold_value is not None else int(batch["legal_hold"] or 0),
+        }
+        conn.execute(
+            """UPDATE batches SET data_classification = ?, data_owner = ?, processing_purpose = ?,
+                      retention_until = ?, legal_hold = ? WHERE batch_id = ?""",
+            (*values.values(), batch_id),
+        )
+        if legal_hold_value is True and not int(batch["legal_hold"] or 0):
+            reason = _clean_value(payload.get("legal_hold_reason")) or "合规调查或业务保全"
+            conn.execute(
+                """INSERT INTO legal_holds (batch_id, reason, active, created_by, created_at)
+                   VALUES (?, ?, 1, ?, ?)""",
+                (batch_id, reason, g.principal["username"], _utc_now()),
+            )
+        elif legal_hold_value is False and int(batch["legal_hold"] or 0):
+            conn.execute(
+                """UPDATE legal_holds SET active = 0, released_by = ?, released_at = ?
+                   WHERE batch_id = ? AND active = 1""",
+                (g.principal["username"], _utc_now(), batch_id),
+            )
+    enterprise_security.record_event(
+        "BATCH_COMPLIANCE_UPDATED", "SUCCESS", f"batch:{batch_id}", values,
+        g.principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({"batch_id": batch_id, **values})
+
+
+@app.post("/api/compliance/retention/run")
+def run_retention_policy():
+    payload = request.get_json(silent=True) or {}
+    dry_run = payload.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return jsonify({"error": "dry_run must be a JSON boolean"}), 400
+    now = _utc_now()
+    with db_connect() as conn:
+        expired = _rows(
+            conn,
+            """SELECT batch_id, filename, data_classification, retention_until
+                 FROM batches WHERE legal_hold = 0 AND retention_until IS NOT NULL
+                  AND retention_until != '' AND retention_until <= ? ORDER BY retention_until""",
+            (now,),
+        )
+        held = _rows(
+            conn,
+            """SELECT batch_id, filename, data_classification, retention_until
+                 FROM batches WHERE legal_hold = 1 AND retention_until IS NOT NULL
+                  AND retention_until != '' AND retention_until <= ? ORDER BY retention_until""",
+            (now,),
+        )
+        if not dry_run:
+            if payload.get("confirm") != "DELETE_EXPIRED_BATCHES":
+                return jsonify({"error": "confirmation token is required"}), 400
+            for item in expired:
+                batch = item["batch_id"]
+                for table in (
+                    "plant_feedback", "workflow_steps", "audit_blocks", "distribution_logs", "lifecycle",
+                    "search_history", "quality_reports", "reviews", "mappings", "batch_masters",
+                    "vector_embeddings", "records",
+                ):
+                    conn.execute(f"DELETE FROM {table} WHERE batch_id = ?", (batch,))
+                conn.execute("DELETE FROM batches WHERE batch_id = ?", (batch,))
+    enterprise_security.record_event(
+        "RETENTION_DRY_RUN" if dry_run else "RETENTION_EXECUTED", "SUCCESS", "retention-policy",
+        {"expired_batch_ids": [item["batch_id"] for item in expired],
+         "held_batch_ids": [item["batch_id"] for item in held], "deleted": 0 if dry_run else len(expired)},
+        g.principal, g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({
+        "dry_run": dry_run, "expired": expired, "blocked_by_legal_hold": held,
+        "eligible_count": len(expired), "deleted_count": 0 if dry_run else len(expired),
+    })
+
+
 @app.get("/")
 def index():
     return send_from_directory(FRONTEND_DIR, FRONTEND_FILE)
@@ -2940,19 +3587,25 @@ def health_check():
     try:
         with db_connect() as conn:
             conn.execute("SELECT 1").fetchone()
-            standard_kb_count = conn.execute(
-                "SELECT COUNT(*) FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
-            ).fetchone()[0]
+            standard_kb_count = enterprise_rag.stats().get("count", 0)
         database_ready = True
     except Exception as exc:
         database_ready = False
         database_error = type(exc).__name__
         logger.exception("database readiness check failed")
+    principal = getattr(g, "principal", None)
+    if enterprise_security.mode == "enterprise" and not principal:
+        return jsonify({
+            "status": "ok" if database_ready else "degraded", "ready": database_ready,
+            "version": APP_VERSION, "authentication": True, "security_mode": "enterprise",
+            "database_error": database_error, "trace_id": g.trace_id,
+        }), 200 if database_ready else 503
     payload = {
         "status": "ok" if database_ready else "degraded", "ready": database_ready,
         "version": APP_VERSION, "storage": "sqlite", "database": DB_PATH.name,
         "deployment": "production" if os.environ.get("MDM_PRODUCTION") == "1" else "development",
-        "authentication": bool(AUTH_PASSWORD), "database_error": database_error,
+        "authentication": enterprise_security.mode != "open", "security_mode": enterprise_security.mode,
+        "database_error": database_error,
         "semantic": {
             "primary": "qwen", "model": SemanticEngine.MODELS["qwen"]["model"],
             "dimension": SemanticEngine.MODELS["qwen"]["dimension"],
@@ -2966,6 +3619,11 @@ def health_check():
             "source_lineage": True, "governance_reports": True,
             "natural_language_distribution": True, "explainable_governance": True,
             "standard_rag": {"namespace": "standard_kb", "count": standard_kb_count},
+            "enterprise_security": {
+                "rbac": enterprise_security.mode == "enterprise", "csrf": enterprise_security.mode == "enterprise",
+                "signed_audit": "HMAC-SHA256", "data_classification": True,
+                "retention_and_legal_hold": True,
+            },
         },
         "trace_id": g.trace_id,
     }
@@ -3056,7 +3714,7 @@ def plant_collaboration():
 def create_batch():
     payload = request.get_json(silent=True) or {}
     try:
-        plant_code = _normalize_plant_code(payload.get("plant_code"))
+        plant_code = _effective_plant_code(payload.get("plant_code"))
         records = normalize_records(payload.get("records", []), payload.get("mapping"), plant_code)
         return jsonify(persist_batch(
             _clean_value(payload.get("filename")) or "uploaded.csv",
@@ -3078,7 +3736,7 @@ def upload_csv():
     encoding = (chardet.detect(raw).get("encoding") or "utf-8").lower()
     try:
         frame = pd.read_csv(io.BytesIO(raw), encoding=encoding)
-        records = normalize_records(frame.to_dict("records"), default_plant_code=_normalize_plant_code(request.form.get("plant_code")))
+        records = normalize_records(frame.to_dict("records"), default_plant_code=_effective_plant_code(request.form.get("plant_code")))
         return jsonify(persist_batch(uploaded.filename, encoding, records, _clean_value(request.form.get("model")) or "qwen")), 201
     except (UnicodeError, pd.errors.ParserError, ValueError) as exc:
         return jsonify({"error": f"invalid CSV: {exc}"}), 400
@@ -3138,6 +3796,28 @@ def api_classify():
         return jsonify({"error": f"unsupported model: {model}", "supported_models": list(SemanticEngine.MODELS)}), 400
     source_text = f"{name} {description}".strip()
     enriched = engine.enrich({"material_name": name, "description": description, "category": payload.get("category", "")})
+    principal = getattr(g, "principal", {}) or {}
+    clearance = {
+        "GROUP_ADMIN": "RESTRICTED", "AUDITOR": "RESTRICTED",
+        "GROUP_APPROVER": "CONFIDENTIAL", "PLANT_STEWARD": "INTERNAL",
+    }.get(principal.get("role"), "INTERNAL")
+    try:
+        rag_result = enterprise_rag.classify(
+            name, description, top_k=3, version_id=_clean_value(payload.get("version_id")) or None,
+            plant_code=_effective_plant_code(payload.get("plant_code")),
+            clearance=clearance, profile_name=_clean_value(payload.get("profile")) or None,
+            trace_id=g.trace_id, actor=principal.get("username", "system"),
+        )
+        category = rag_result["recommended_category"]
+        attributes = engine.presentation_attributes(enriched, category)
+        rag_result["attributes"] = attributes
+        rag_result["standard_name_preview"] = engine.generate_standard_name(
+            [{**enriched, "_ext": attributes}], category
+        )
+        rag_result["source_text"] = source_text
+        return jsonify(rag_result)
+    except (LookupError, PermissionError, ValueError) as exc:
+        logger.warning("enterprise RAG classification fallback: %s", exc)
     with db_connect() as conn:
         standard_references = _search_standard_kb(conn, source_text, 3)
     rag_scores = {item["category"]: item["score"] for item in standard_references}
@@ -3177,7 +3857,7 @@ def api_classify():
         "candidates": candidates[:3], "semantic": metadata, "standard_references": standard_references,
         "rag": {"namespace": "standard_kb", "retrieval_count": len(standard_references),
                 "method": "离线Embedding检索增强"},
-        "plant_code": _normalize_plant_code(payload.get("plant_code")),
+        "plant_code": _effective_plant_code(payload.get("plant_code")),
     })
 
 
@@ -3191,6 +3871,14 @@ def agent_capabilities():
         ],
         "semantic_models": SemanticEngine.MODELS,
         "configured_models": semantic_engine.configured_models(),
+        "llm_agent": bool(qwen_agent.api_key),
+        "llm_model": qwen_agent.model,
+        "speech": {
+            "qwen_asr_configured": bool(os.getenv("DASHSCOPE_API_KEY", "").strip()),
+            "model": os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash-2026-02-10"),
+            "fallback": "browser-speech-recognition",
+            "audio_persisted": False,
+        },
         "fallback": "规则增强 Jaccard 字符相似度（确定性）",
         "plants": PLANTS,
         "collaboration_endpoint": "/api/plants",
@@ -3209,7 +3897,7 @@ def agent_plan():
     if not task:
         return jsonify({"error": "task is required"}), 400
     batch_id = _clean_value(payload.get("batch_id"))
-    context = {"plant_code": _normalize_plant_code(payload.get("plant_code")), "trace_id": g.trace_id}
+    context = {"plant_code": _effective_plant_code(payload.get("plant_code")), "trace_id": g.trace_id}
     if batch_id:
         try:
             state = get_batch_state(batch_id)
@@ -3218,6 +3906,101 @@ def agent_plan():
             return jsonify({"error": "batch not found"}), 404
     plan, runtime = qwen_agent.plan(task, context)
     return jsonify({"plan": plan, "runtime": runtime, "trace_id": g.trace_id})
+
+
+def _route_agent_action(text: str) -> tuple[str, float, str]:
+    lower = _clean_value(text).lower()
+    distribution_verbs = ("分发", "发往", "发送", "同步", "下发", "推送", "发到")
+    distribution_targets = tuple(DISTRIBUTION_SYSTEM_ALIASES) + ("系统", "工厂", "上海厂", "北京厂")
+    governance_words = ("治理", "归并", "查重", "闭环", "质量评估", "审核", "编排", "处理批次")
+    if any(word.lower() in lower for word in distribution_verbs) and any(
+        word.lower() in lower for word in distribution_targets
+    ):
+        return "DISTRIBUTE", 0.96, "识别到分发动词以及目标系统或工厂"
+    if any(word.lower() in lower for word in governance_words):
+        return "GOVERN", 0.9, "识别到主数据治理或闭环编排意图"
+    return "SEARCH", 0.82, "未发现副作用操作，按智能检索处理"
+
+
+@app.post("/api/agent/query")
+def unified_agent_query():
+    """Classify a command and return a plan; this endpoint never executes side effects."""
+    payload = request.get_json(silent=True) or {}
+    text = _clean_value(payload.get("text") or payload.get("query") or payload.get("prompt"))
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    action, confidence, reason = _route_agent_action(text)
+    return jsonify({
+        "action": action, "intent": action, "confidence": confidence, "reason": reason,
+        "requires_confirmation": action in {"DISTRIBUTE", "GOVERN"},
+        "next_endpoint": {"SEARCH": "/api/search", "DISTRIBUTE": "/api/intent", "GOVERN": "/api/agent/plan"}[action],
+        "trace_id": g.trace_id,
+    })
+
+
+@app.post("/api/agent/transcribe")
+def transcribe_agent_audio():
+    """Transcribe a short browser recording with Qwen3-ASR; never persist audio."""
+    audio = request.files.get("audio")
+    if not audio:
+        return jsonify({"error": "audio file is required", "fallback": "browser"}), 400
+    max_bytes = int(os.getenv("MDM_MAX_ASR_BYTES", str(7 * 1024 * 1024)))
+    content = audio.read(max_bytes + 1)
+    if not content:
+        return jsonify({"error": "audio file is empty", "fallback": "browser"}), 400
+    if len(content) > max_bytes:
+        return jsonify({"error": "audio file exceeds the configured limit", "fallback": "browser"}), 413
+    api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+    if not api_key:
+        return jsonify({
+            "error": "DASHSCOPE_API_KEY is not configured", "fallback": "browser",
+            "warning": "通义语音未配置，前端将自动尝试浏览器语音识别。",
+        }), 503
+    mime_type = _clean_value(audio.mimetype).lower()
+    allowed = {
+        "audio/webm", "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3",
+        "audio/ogg", "audio/opus", "audio/aac", "audio/mp4", "video/webm",
+    }
+    if mime_type not in allowed:
+        return jsonify({"error": f"unsupported audio type: {mime_type or 'unknown'}", "fallback": "browser"}), 415
+    data_uri = f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
+    model = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash-2026-02-10").strip() or "qwen3-asr-flash-2026-02-10"
+    url = os.getenv(
+        "QWEN_ASR_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    ).strip()
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": [{
+            "type": "input_audio", "input_audio": {"data": data_uri},
+        }]}],
+        "stream": False,
+        "asr_options": {"language": "zh", "enable_itn": True},
+    }
+    try:
+        upstream = requests.post(
+            url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body, timeout=(5.0, 45.0),
+        )
+        if upstream.status_code != 200:
+            logger.warning("Qwen ASR returned HTTP %s trace_id=%s", upstream.status_code, g.trace_id)
+            return jsonify({
+                "error": f"Qwen ASR returned HTTP {upstream.status_code}", "fallback": "browser",
+                "warning": "通义语音暂不可用，前端将自动尝试浏览器语音识别。",
+            }), 502
+        result = upstream.json()
+        transcript = _clean_value(result["choices"][0]["message"]["content"])
+        if not transcript:
+            raise ValueError("empty transcript")
+        return jsonify({
+            "text": transcript, "transcript": transcript, "provider": "qwen",
+            "model": model, "audio_persisted": False, "trace_id": g.trace_id,
+        })
+    except (requests.Timeout, requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("Qwen ASR unavailable: %s trace_id=%s", exc, g.trace_id)
+        return jsonify({
+            "error": "Qwen ASR is temporarily unavailable", "fallback": "browser",
+            "warning": "通义语音识别失败，前端将自动尝试浏览器语音识别。",
+        }), 502
 
 
 @app.post("/api/demo/run")
@@ -3306,12 +4089,7 @@ def batch_workflow(batch_id: str):
 
 @app.get("/api/standards/stats")
 def standard_kb_stats():
-    with db_connect() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM vector_embeddings WHERE namespace = 'standard_kb' AND batch_id IS NULL"
-        ).fetchone()[0]
-        return jsonify({"namespace": "standard_kb", "count": count, "provider": "local",
-                        "model": "feature-hash-v1", "dimension": 384, "standard_version": "2018"})
+    return jsonify({**enterprise_rag.stats(), "audit": enterprise_rag.verify_audit_chain()})
 
 
 @app.post("/api/standards/search")
@@ -3324,10 +4102,164 @@ def search_standard_kb():
         top_k = int(payload.get("top_k", 3))
     except (TypeError, ValueError):
         return jsonify({"error": "top_k must be an integer"}), 400
-    with db_connect() as conn:
-        results = _search_standard_kb(conn, query, top_k)
-    return jsonify({"query": query, "namespace": "standard_kb", "results": results,
-                    "citation_required": True, "trace_id": g.trace_id})
+    principal = getattr(g, "principal", {}) or {}
+    clearance = {
+        "GROUP_ADMIN": "RESTRICTED", "AUDITOR": "RESTRICTED",
+        "GROUP_APPROVER": "CONFIDENTIAL", "PLANT_STEWARD": "INTERNAL",
+    }.get(principal.get("role"), "INTERNAL")
+    try:
+        result = enterprise_rag.search(
+            query, top_k=top_k, version_id=_clean_value(payload.get("version_id")) or None,
+            plant_code=_effective_plant_code(payload.get("plant_code")),
+            clearance=clearance, profile_name=_clean_value(payload.get("profile")) or None,
+            trace_id=g.trace_id, actor=principal.get("username", "system"),
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc), "code": "KNOWLEDGE_SCOPE_DENIED"}), 403
+    except (LookupError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/knowledge/collections")
+def knowledge_collections():
+    return jsonify({
+        "collections": [{
+            "catalog_id": enterprise_rag.catalog_id, "name": enterprise_rag.catalog_name,
+            "standard_no": enterprise_rag.standard_no, **enterprise_rag.stats(),
+        }],
+        "versions": enterprise_rag.list_versions(), "audit": enterprise_rag.verify_audit_chain(),
+    })
+
+
+@app.get("/api/knowledge/versions")
+def knowledge_versions():
+    return jsonify({"versions": enterprise_rag.list_versions(), "active": enterprise_rag.stats()})
+
+
+@app.post("/api/knowledge/import")
+def knowledge_import():
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return jsonify({"error": "XLSX knowledge file is required"}), 400
+    if Path(uploaded.filename).suffix.lower() != ".xlsx":
+        return jsonify({"error": "only .xlsx standard knowledge files are supported"}), 400
+    version_label = _clean_value(request.form.get("version_label"))
+    if not version_label:
+        return jsonify({"error": "version_label is required"}), 400
+    allowed_plants = [
+        item.strip().upper() for item in _clean_value(request.form.get("allowed_plants") or "*").split(",")
+        if item.strip()
+    ]
+    allowed_classifications = [
+        item.strip().upper() for item in _clean_value(
+            request.form.get("allowed_classifications") or "INTERNAL,CONFIDENTIAL,RESTRICTED"
+        ).split(",") if item.strip()
+    ]
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="mai-rag-", suffix=".xlsx", delete=False) as temp_file:
+            uploaded.save(temp_file)
+            temp_path = Path(temp_file.name)
+        result = enterprise_rag.import_xlsx(
+            temp_path, version_label=version_label, actor=g.principal["username"],
+            notes=_clean_value(request.form.get("notes")), allowed_plants=allowed_plants,
+            allowed_classifications=allowed_classifications,
+            security_classification=_clean_value(request.form.get("security_classification")) or "INTERNAL",
+        )
+        publish = _clean_value(request.form.get("publish")).lower() in {"1", "true", "yes"}
+        if publish and result["status"] == "DRAFT":
+            result = enterprise_rag.validate_version(result["version_id"], actor=g.principal["username"])
+        if publish and result["status"] == "VALIDATED":
+            result = enterprise_rag.publish_version(result["version_id"], actor=g.principal["username"])
+        return jsonify({"import": result, "stats": enterprise_rag.stats()}), 201
+    except (ValueError, FileNotFoundError, zipfile.BadZipFile) as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+
+@app.post("/api/knowledge/versions/<version_id>/validate")
+def knowledge_validate(version_id: str):
+    try:
+        return jsonify(enterprise_rag.validate_version(version_id, actor=g.principal["username"]))
+    except (LookupError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/knowledge/versions/<version_id>/publish")
+def knowledge_publish(version_id: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enterprise_rag.publish_version(
+            version_id, actor=g.principal["username"],
+            expected_current_version_id=payload.get("expected_current_version_id"),
+        )
+        return jsonify({"version": result, "stats": enterprise_rag.stats()})
+    except (LookupError, ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@app.post("/api/knowledge/versions/<version_id>/rollback")
+def knowledge_rollback(version_id: str):
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enterprise_rag.rollback_version(
+            version_id, actor=g.principal["username"],
+            expected_current_version_id=payload.get("expected_current_version_id"),
+        )
+        return jsonify({"version": result, "stats": enterprise_rag.stats()})
+    except (LookupError, ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@app.post("/api/knowledge/reindex")
+def knowledge_reindex():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enterprise_rag.reindex_version(
+            _clean_value(payload.get("version_id")) or None,
+            profile_name=_clean_value(payload.get("profile_name")) or None,
+            actor=g.principal["username"],
+        )
+        return jsonify(result)
+    except (LookupError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/knowledge/profile", methods=["GET", "POST"])
+def knowledge_profile():
+    if request.method == "GET":
+        with db_connect() as conn:
+            rows = _rows(
+                conn,
+                """SELECT profile_name, config_json, is_active, updated_by, updated_at
+                     FROM enterprise_rag_profiles WHERE catalog_id = ? ORDER BY is_active DESC, profile_name""",
+                (enterprise_rag.catalog_id,),
+            )
+        for row in rows:
+            row["config"] = json.loads(row.pop("config_json") or "{}")
+            row["is_active"] = bool(row["is_active"])
+        return jsonify({"profiles": rows})
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enterprise_rag.put_profile(
+            _clean_value(payload.get("profile_name")), payload.get("config") or {},
+            actor=g.principal["username"], activate=bool(payload.get("activate", False)),
+        )
+        if result["active"] and payload.get("reindex", True):
+            result["index"] = enterprise_rag.reindex_version(
+                profile_name=result["profile_name"], actor=g.principal["username"]
+            )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/knowledge/audit/verify")
+def knowledge_audit_verify():
+    return jsonify(enterprise_rag.verify_audit_chain())
 
 
 @app.get("/api/vectors/stats")
@@ -3375,7 +4307,7 @@ def search_vector_store():
         if not batch_id:
             return jsonify({"error": "no governed batch is available"}), 400
         result = _search_vectors(conn, query, batch_id, model, top_k,
-                                 _normalize_plant_code(payload.get("plant_code")),
+                                 _effective_plant_code(payload.get("plant_code")),
                                  _clean_value(payload.get("namespace")) or "golden_master")
         return jsonify({**result, "trace_id": g.trace_id})
 
@@ -3390,7 +4322,7 @@ def governance_graph():
         batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
         if not batch_id:
             return jsonify({"batch_id": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0}})
-        plant_code = _normalize_plant_code(request.args.get("plant_code"))
+        plant_code = _effective_plant_code(request.args.get("plant_code"))
         graph, stats = _build_governance_graph(conn, batch_id, plant_code, raw_limit)
         positions = nx.spring_layout(graph, seed=5497, iterations=35) if graph.number_of_nodes() else {}
         centrality = nx.degree_centrality(graph) if graph.number_of_nodes() > 1 else {node: 0 for node in graph.nodes}
@@ -3511,7 +4443,7 @@ def _source_record_context(
 
 @app.get("/api/lineage/source/<int:record_id>")
 def source_record_lineage(record_id: int):
-    requested_plant = _normalize_plant_code(request.args.get("plant_code"))
+    requested_plant = _effective_plant_code(request.args.get("plant_code"))
     with db_connect() as conn:
         row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
         if not row:
@@ -3531,7 +4463,7 @@ def graph_lineage(mdm_code: str):
         batch_id = request.args.get("batch_id") or _latest_batch_id(conn)
         if not batch_id:
             return jsonify({"error": "no governed batch is available"}), 400
-        requested_plant = _normalize_plant_code(request.args.get("plant_code"))
+        requested_plant = _effective_plant_code(request.args.get("plant_code"))
         graph, _stats = _build_governance_graph(conn, batch_id, requested_plant, 300)
         node_id = f"master:{mdm_code}"
         if node_id not in graph:
@@ -3757,7 +4689,7 @@ def api_ocr():
         "category": extracted["_category"],
         "standard_name_preview": standard_name,
         "confidence": recognition["ocr_confidence"],
-        "plant_code": _normalize_plant_code(payload.get("plant_code")),
+        "plant_code": _effective_plant_code(payload.get("plant_code")),
         "warning": recognition["warning"],
         "engine_status": ocr_engine.status(),
         "install_status": ocr_installer.status(),
@@ -3884,12 +4816,16 @@ def _parse_distribution_intent(text: str, plant_code=None) -> dict:
         if alias in lower and code not in target_plants:
             target_plants.append(code)
     if plant_code:
-        explicit_plant = _normalize_plant_code(plant_code)
+        explicit_plant = _effective_plant_code(plant_code)
         if explicit_plant not in target_plants:
             target_plants.append(explicit_plant)
     if not target_plants:
         target_plants = ["GROUP"]
     filters = _extract_distribution_filters(text)
+    material_part = re.split(r"发往|同步到|分发到|发送到|发到", text, maxsplit=1)[0]
+    filters.setdefault("brand", engine.extract_brand(material_part) or "")
+    filters.setdefault("model", engine.extract_model(material_part) or "")
+    filters = {key: value for key, value in filters.items() if _clean_value(value)}
     mode = "INCREMENTAL" if any(key in lower for key in ("增量", "新增", "刚批准", "最新")) else "FULL"
     confidence = 0.35 + (0.35 if targets else 0) + (0.15 if filters else 0) + (0.1 if target_plants else 0)
     return {
@@ -3901,31 +4837,120 @@ def _parse_distribution_intent(text: str, plant_code=None) -> dict:
     }
 
 
-def _match_distribution_masters(
-    conn: sqlite3.Connection, batch_id: str, filters: dict, target_plants: list[str]
+def _distribution_text_similarity(left, right) -> float:
+    """Blend exact, character overlap and edit similarity for short material fields."""
+    lhs = engine.standardize_text(_clean_value(left)).lower()
+    rhs = engine.standardize_text(_clean_value(right)).lower()
+    if not lhs or not rhs:
+        return 0.0
+    if lhs == rhs:
+        return 1.0
+    if lhs in rhs or rhs in lhs:
+        return 0.92
+    left_chars, right_chars = set(lhs), set(rhs)
+    union = left_chars | right_chars
+    jaccard = len(left_chars & right_chars) / len(union) if union else 0.0
+    edit = SequenceMatcher(None, lhs, rhs).ratio()
+    return round(min(0.9, jaccard * 0.55 + edit * 0.45), 4)
+
+
+def _rank_distribution_masters(
+    conn: sqlite3.Connection, batch_id: str, filters: dict, target_plants: list[str],
+    query_text: str = "", top_k: int = 20,
 ) -> list[dict]:
+    """Return approved masters ranked by explainable fuzzy similarity.
+
+    Plant visibility and approval are hard gates.  User-supplied brand/model/name
+    values are ranking signals, so a near match remains discoverable instead of
+    disappearing when one spelling or abbreviation differs.
+    """
     rows = _rows(
         conn,
         """SELECT * FROM batch_masters WHERE batch_id = ?
            AND decision IN ('AUTO_MERGE', 'NEW', 'CONFIRMED_NEW') ORDER BY rowid""",
         (batch_id,),
     )
-    matched = []
+    filters = filters or {}
+    query_parts = [query_text, *[str(value) for value in filters.values() if value]]
+    query = " ".join(query_parts).strip()
+    ranked = []
     for row in rows:
-        if target_plants and not any(_master_distributable_to_plant(row.get("plant_codes"), plant) for plant in target_plants):
+        eligible_plants = [
+            plant for plant in (target_plants or ["GROUP"])
+            if _master_distributable_to_plant(row.get("plant_codes"), plant)
+        ]
+        if target_plants and not eligible_plants:
             continue
-        checks = []
+        scores, reasons, explicit_scores = [], [], []
         if filters.get("brand"):
-            checks.append(_clean_value(filters["brand"]).lower() in _clean_value(row.get("brand")).lower())
+            value = _distribution_text_similarity(filters["brand"], row.get("brand"))
+            scores.append((value, 0.20))
+            explicit_scores.append(value)
+            if value >= 0.86: reasons.append("品牌一致")
+            elif value >= 0.55: reasons.append(f"品牌相似 {value:.0%}")
         if filters.get("model"):
-            checks.append(_clean_value(filters["model"]).lower() in _clean_value(row.get("model")).lower())
+            value = _distribution_text_similarity(filters["model"], row.get("model"))
+            scores.append((value, 0.35))
+            explicit_scores.append(value)
+            if value >= 0.86: reasons.append("型号一致")
+            elif value >= 0.55: reasons.append(f"型号相似 {value:.0%}")
         if filters.get("material_name"):
-            query_name = engine.standardize_text(filters["material_name"])
-            master_name = engine.standardize_text(row.get("standard_name"))
-            checks.append(query_name in master_name or master_name in query_name)
-        if all(checks):
-            matched.append(row)
-    return matched
+            value = _distribution_text_similarity(filters["material_name"], row.get("standard_name"))
+            scores.append((value, 0.30))
+            explicit_scores.append(value)
+            if value >= 0.86: reasons.append("名称一致")
+            elif value >= 0.45: reasons.append(f"名称相似 {value:.0%}")
+        if filters.get("category"):
+            value = _distribution_text_similarity(filters["category"], row.get("category"))
+            scores.append((value, 0.15))
+            explicit_scores.append(value)
+            if value >= 0.7: reasons.append("品类相近")
+        if query:
+            value = _distribution_text_similarity(query, row.get("standard_name"))
+            scores.append((value, 0.10 if scores else 0.35))
+            if value >= 0.55: reasons.append(f"整体语义片段相似 {value:.0%}")
+        if scores:
+            weight = sum(weight for _value, weight in scores)
+            score = sum(value * weight for value, weight in scores) / max(weight, 0.01)
+        else:
+            score = 0.5
+        score = round(max(0.0, min(0.99, score)), 4)
+        if not reasons:
+            reasons.append("可分发黄金主数据")
+        if score >= 0.82:
+            level = "HIGH"
+        elif score >= 0.60:
+            level = "MEDIUM"
+        else:
+            level = "LOW"
+        ranked.append({
+            "master": row, "similarity": score, "score": score,
+            "match_level": level, "reasons": reasons,
+            "exact_match": bool(explicit_scores and all(value >= 0.86 for value in explicit_scores)),
+            "eligible_plants": eligible_plants,
+        })
+    ranked.sort(key=lambda item: (-item["similarity"], item["master"].get("mdm_code", "")))
+    if filters or query_text:
+        ranked = [item for item in ranked if item["similarity"] >= 0.30]
+    return ranked[:max(1, int(top_k))]
+
+
+def _actionable_distribution_ranks(ranked: list[dict], has_filters: bool) -> list[dict]:
+    """Keep recommendations broad while limiting executable tasks to credible matches."""
+    if not has_filters:
+        return ranked
+    exact = [item for item in ranked if item.get("exact_match")]
+    if exact:
+        return exact
+    credible = [item for item in ranked if float(item.get("similarity") or 0) >= 0.55]
+    return credible or ranked[:1]
+
+
+def _match_distribution_masters(
+    conn: sqlite3.Connection, batch_id: str, filters: dict, target_plants: list[str]
+) -> list[dict]:
+    """Compatibility wrapper used by existing distribution callers."""
+    return [item["master"] for item in _rank_distribution_masters(conn, batch_id, filters, target_plants)]
 
 
 @app.post("/api/intent")
@@ -3937,15 +4962,47 @@ def api_intent():
     response = _parse_distribution_intent(text, payload.get("plant_code"))
     with db_connect() as conn:
         batch_id = payload.get("batch_id") or _latest_batch_id(conn)
-        matches = _match_distribution_masters(
-            conn, batch_id, response["filters"], response["target_plants"]
+        candidate_ranked = _rank_distribution_masters(
+            conn, batch_id, response["filters"], response["target_plants"],
+            text if response["filters"] else "",
         ) if batch_id else []
+        ranked = _actionable_distribution_ranks(candidate_ranked, bool(response["filters"]))
+        matches = [item["master"] for item in ranked]
+    explicit_one = bool(re.search(r"(?:一个|一条|最相似|第一条|top\s*1)", text, re.I))
+    explicit_all = bool(re.search(r"(?:全部|所有|整批|批量|新增主数据)", text, re.I))
+    selection_mode = "TOP_ONE" if explicit_one else ("ALL" if explicit_all else ("EXPLICIT" if len(matches) > 1 else "SINGLE"))
+    selected_codes = [item["master"].get("mdm_code") for item in ranked[:1]] if selection_mode == "TOP_ONE" else []
+    task_rows = []
+    for item in ranked:
+        master = item["master"]
+        for target_plant in response["target_plants"]:
+            eligible = target_plant in item["eligible_plants"]
+            for target_system in response["target_systems"]:
+                task_signature = f"{batch_id}|{master.get('mdm_code')}|{target_system}|{target_plant}"
+                task_rows.append({
+                    "task_id": f"TASK-{uuid.uuid5(uuid.NAMESPACE_URL, task_signature).hex[:12].upper()}",
+                    "mdm_code": master.get("mdm_code"), "standard_name": master.get("standard_name"),
+                    "target_system": target_system, "target_plant": target_plant,
+                    "similarity": item["similarity"], "match_level": item["match_level"],
+                    "reasons": item["reasons"], "eligible": eligible,
+                    "selected": master.get("mdm_code") in selected_codes and eligible,
+                    "status": "PENDING_CONFIRMATION" if eligible else "OUT_OF_SCOPE",
+                })
     response.update({
         "batch_id": batch_id, "matched_master_count": len(matches),
         "matched_masters": [{
             key: item.get(key) for key in ("mdm_code", "standard_name", "brand", "model", "category", "plant_codes")
-        } for item in matches[:20]],
-        "task_count": len(matches) * len(response["target_systems"]) * len(response["target_plants"]),
+        } | {"similarity": ranked[index]["similarity"], "score": ranked[index]["score"],
+            "match_level": ranked[index]["match_level"], "reasons": ranked[index]["reasons"],
+            "selected": item.get("mdm_code") in selected_codes}
+        for index, item in enumerate(matches[:20])],
+        "candidate_masters": [{"mdm_code": item["master"].get("mdm_code"), "standard_name": item["master"].get("standard_name"),
+                               "similarity": item["similarity"], "match_level": item["match_level"], "reasons": item["reasons"]}
+                              for item in candidate_ranked],
+        "tasks": task_rows, "selection_mode": selection_mode,
+        "selection_required": selection_mode == "EXPLICIT" and len(task_rows) > 1,
+        "selected_master_codes": selected_codes,
+        "task_count": sum(1 for task in task_rows if task["eligible"]),
         "requires_confirmation": bool(response["target_systems"] and matches),
     })
     response["question"] = (
@@ -3955,7 +5012,7 @@ def api_intent():
     if not response["targets"]:
         response["warning"] = "未识别到目标系统，请在指令中包含 ERP、SAP、EAM、MES、WMS 或采购平台。"
     elif response["filters"] and not matches:
-        response["warning"] = "未找到同时满足品牌、型号和名称条件的已批准黄金主数据。"
+        response["warning"] = "未找到达到相似度阈值且已批准的黄金主数据。"
     return jsonify(response)
 
 
@@ -4126,8 +5183,14 @@ def search():
                     "required_conditions": required,
                 })
             continue
-        if required and match_mode in {"or", "fuzzy"} and matched == 0:
+        if required and match_mode == "or" and matched == 0:
             continue
+        if required and match_mode == "fuzzy" and matched == 0:
+            # Fuzzy mode is allowed to keep a semantic-only candidate.  This is
+            # deliberately stricter than a normal result and remains a suggestion
+            # when no structured attribute is exact.
+            if semantic_score < 0.45 and overlap < 0.18:
+                continue
         if match_mode == "fuzzy" and score > 0:
             score = score * 1.15 + 0.03
         if score > 0:
@@ -4135,11 +5198,15 @@ def search():
     results.sort(key=lambda item: item["score"], reverse=True)
     suggestions.sort(key=lambda item: (item["matched_conditions"] / item["required_conditions"], item["score"]), reverse=True)
     with db_connect() as conn:
+        knowledge_references = _search_standard_kb(conn, query, 3)
         conn.execute("INSERT INTO search_history (batch_id, query) VALUES (?, ?)", (batch_id, query))
     public_conditions = [{"type": key, "value": value} for key, value in conditions.items() if value]
     return jsonify({"query": query, "conditions": public_conditions, "match_mode": match_mode,
                     "semantic": search_meta, "plant_code": (state.get("batch") or {}).get("view_plant_code", "GROUP"),
+                    "knowledge_references": knowledge_references,
+                    "knowledge_retrieval": {"namespace": "standard_kb", "top_k": 3, "access_filtered": True},
                     "results": results[:20], "total": len(results),
+                    "similar_candidates": (results[:20] if results else suggestions[:10]),
                     "suggestions": suggestions[:10] if not results else [],
                     "suggestion_total": len(suggestions) if not results else 0})
 
@@ -4161,7 +5228,7 @@ def get_reviews():
 def decide_review(review_id: int):
     payload = request.get_json(silent=True) or {}
     action = _clean_value(payload.get("action")).upper()
-    actor_plant = _normalize_plant_code(payload.get("plant_code"))
+    actor_plant = _effective_plant_code(payload.get("plant_code"))
     if action not in {"MERGE", "NEW", "SKIP"}:
         return jsonify({"error": "action must be MERGE, NEW, or SKIP"}), 400
     with db_connect() as conn:
@@ -4189,7 +5256,7 @@ def decide_review(review_id: int):
         _append_audit_block(conn, batch_id, "REVIEW_DECIDED", "MASTER", review["mdm_code"], {
             "review_id": review_id, "action": action, "decision": decision if action != "SKIP" else "SKIPPED",
             "plant_code": actor_plant, "pending_reviews": pending,
-        }, actor=_clean_value(payload.get("actor")) or f"{actor_plant}审核人")
+        }, actor=_current_actor(_clean_value(payload.get("actor")) or f"{actor_plant}审核人"))
     return jsonify(get_batch_state(batch_id))
 
 
@@ -4201,7 +5268,7 @@ def create_lifecycle():
             return jsonify({"error": f"{field} is required"}), 400
     with db_connect() as conn:
         batch_id = payload.get("batch_id") or _latest_batch_id(conn)
-        plant_code = _normalize_plant_code(payload.get("plant_code"))
+        plant_code = _effective_plant_code(payload.get("plant_code"))
         cursor = conn.execute(
             """INSERT INTO lifecycle
                (batch_id, request_id, name, mdm_code, category, brand, model, description, reason,
@@ -4209,14 +5276,15 @@ def create_lifecycle():
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (batch_id, payload.get("request_id") or f"REQ-{uuid.uuid4().hex[:10].upper()}", payload["name"],
              payload.get("mdm_code", ""), payload["category"], payload.get("brand", ""), payload.get("model", ""),
-             payload.get("description", ""), payload["reason"], "PENDING", payload.get("creator", "申请人"),
+             payload.get("description", ""), payload["reason"], "PENDING",
+             _current_actor(payload.get("creator", "申请人")),
              payload.get("change_of", ""), plant_code),
         )
         if batch_id:
             _append_audit_block(conn, batch_id, "LIFECYCLE_CREATED", "LIFECYCLE", str(cursor.lastrowid), {
                 "request_id": payload.get("request_id"), "name": payload["name"], "category": payload["category"],
                 "plant_code": plant_code, "status": "PENDING",
-            }, actor=_clean_value(payload.get("creator")) or "申请人")
+            }, actor=_current_actor(_clean_value(payload.get("creator")) or "申请人"))
     return jsonify({"id": cursor.lastrowid, "status": "PENDING"}), 201
 
 
@@ -4246,15 +5314,23 @@ def update_lifecycle(lifecycle_id: int):
             ("REVIEWED", "REJECTED"): {"审批人"},
             ("APPROVED", "ARCHIVED"): {"数据管理员", "审批人"},
         }
-        reviewer = _clean_value(payload.get("reviewer"))
+        reviewer = _current_actor(_clean_value(payload.get("reviewer")))
         if status != current_status:
             if status not in transitions.get(current_status, set()):
                 return jsonify({"error": f"invalid lifecycle transition: {current_status} -> {status}"}), 409
-            allowed_reviewers = required_reviewers.get((current_status, status), set())
-            if allowed_reviewers and reviewer not in allowed_reviewers:
-                return jsonify({
-                    "error": f"{current_status} -> {status} requires reviewer role: {' / '.join(sorted(allowed_reviewers))}"
-                }), 403
+            if enterprise_security.mode == "enterprise":
+                required_permission = (
+                    "lifecycle.review" if current_status == "PENDING" else "lifecycle.approve"
+                )
+                if not enterprise_security.has_permission(g.principal, required_permission):
+                    return jsonify({"error": f"permission required: {required_permission}",
+                                    "code": "PERMISSION_DENIED"}), 403
+            else:
+                allowed_reviewers = required_reviewers.get((current_status, status), set())
+                if allowed_reviewers and reviewer not in allowed_reviewers:
+                    return jsonify({
+                        "error": f"{current_status} -> {status} requires reviewer role: {' / '.join(sorted(allowed_reviewers))}"
+                    }), 403
         mdm_code = row["mdm_code"] or ""
         if status == "APPROVED" and (not mdm_code or mdm_code.startswith("NEW-")):
             prefix = engine.CATEGORY_PREFIX.get(row["category"], "MDM-X")
@@ -4315,6 +5391,12 @@ def distribute():
     payload = request.get_json(silent=True) or {}
     instruction = _clean_value(payload.get("instruction") or payload.get("text") or payload.get("prompt"))
     intent = _parse_distribution_intent(instruction, payload.get("plant_code")) if instruction else None
+    selected_tasks = payload.get("selected_tasks") or []
+    if selected_tasks and not isinstance(selected_tasks, list):
+        return jsonify({"error": "selected_tasks must be a list"}), 400
+    selected_task_codes = [
+        item.get("mdm_code") for item in selected_tasks if isinstance(item, dict) and item.get("mdm_code")
+    ]
     raw_targets = payload.get("target_systems") or (intent or {}).get("target_systems") or []
     if isinstance(raw_targets, str):
         raw_targets = [raw_targets]
@@ -4330,7 +5412,7 @@ def distribute():
             "error": "unsupported target system", "unsupported": unsupported_targets,
             "supported_systems": list(DISTRIBUTION_SYSTEM_ALIASES),
         }), 400
-    master_codes = payload.get("master_codes") or [
+    master_codes = payload.get("selected_master_codes") or payload.get("master_codes") or selected_task_codes or [
         item.get("mdm_code") for item in payload.get("masters", []) if item.get("mdm_code")
     ]
     if isinstance(master_codes, str):
@@ -4344,7 +5426,7 @@ def distribute():
         raw_plants = [payload.get("plant_code") or "GROUP"]
     if isinstance(raw_plants, str):
         raw_plants = [raw_plants]
-    target_plants = list(dict.fromkeys(_normalize_plant_code(item) for item in raw_plants))
+    target_plants = list(dict.fromkeys(_effective_plant_code(item) for item in raw_plants))
     unsupported_plants = [item for item in target_plants if item not in PLANTS]
     if unsupported_plants:
         return jsonify({"error": "unsupported plant_code", "unsupported": unsupported_plants, "supported_plants": PLANTS}), 400
@@ -4360,9 +5442,22 @@ def distribute():
         if not batch_id:
             return jsonify({"error": "no governed batch is available"}), 400
         if not master_codes:
-            master_codes = [
-                item["mdm_code"] for item in _match_distribution_masters(conn, batch_id, filters, target_plants)
-            ]
+            ranked = _rank_distribution_masters(
+                conn, batch_id, filters, target_plants,
+                instruction if filters else "",
+            )
+            ranked = _actionable_distribution_ranks(ranked, bool(filters))
+            if instruction and len(ranked) > 1 and not re.search(
+                r"(?:全部|所有|整批|批量|新增主数据|一个|一条|最相似|第一条|top\s*1)", instruction, re.I
+            ) and not selected_tasks:
+                return jsonify({
+                    "error": "multiple masters matched; select one or more tasks before execution",
+                    "code": "MASTER_SELECTION_REQUIRED", "requires_selection": True,
+                    "candidates": [{"mdm_code": item["master"].get("mdm_code"), "standard_name": item["master"].get("standard_name"),
+                                    "similarity": item["similarity"], "reasons": item["reasons"]} for item in ranked[:20]],
+                }), 409
+            master_codes = [item["master"]["mdm_code"] for item in ranked]
+        master_codes = list(dict.fromkeys(filter(None, master_codes)))
         if not master_codes:
             return jsonify({"error": "no approved master data is available for distribution"}), 400
         placeholders = ",".join("?" for _ in master_codes)
@@ -4374,14 +5469,35 @@ def distribute():
             [batch_id, *master_codes],
         )
         known = {row["mdm_code"]: row for row in rows if row["decision"] in {"AUTO_MERGE", "NEW", "CONFIRMED_NEW"}}
+        unknown_codes = [code for code in master_codes if code not in known]
+        if unknown_codes:
+            return jsonify({"error": "selected master is not approved in this batch", "unknown_master_codes": unknown_codes}), 400
+        execution_tasks = []
+        if selected_tasks:
+            for task in selected_tasks:
+                if not isinstance(task, dict):
+                    return jsonify({"error": "selected_tasks entries must be objects"}), 400
+                code = _clean_value(task.get("mdm_code"))
+                target = _normalize_target_system(task.get("target_system"))
+                plant = _effective_plant_code(task.get("target_plant"))
+                if code not in known or not target or target not in targets or plant not in target_plants:
+                    return jsonify({"error": "selected task is outside the confirmed plan", "task": task}), 400
+                signature = f"{batch_id}|{code}|{target}|{plant}"
+                expected_id = f"TASK-{uuid.uuid5(uuid.NAMESPACE_URL, signature).hex[:12].upper()}"
+                if task.get("task_id") and task.get("task_id") != expected_id:
+                    return jsonify({"error": "selected task fingerprint is invalid", "task_id": task.get("task_id")}), 400
+                if not _master_distributable_to_plant(known[code]["plant_codes"], plant):
+                    return jsonify({"error": "selected task is outside the factory scope", "task_id": task.get("task_id")}), 403
+                execution_tasks.append((plant, target, code))
+            master_codes = list(dict.fromkeys(code for _plant, _target, code in execution_tasks))
+        else:
+            execution_tasks = [(plant_code, target, code) for plant_code in target_plants for target in targets for code in master_codes]
         artifacts = []
-        for plant_code in target_plants:
-            for target in targets:
-                for code in master_codes:
-                    master = known.get(code)
-                    allowed = bool(master and _master_distributable_to_plant(master["plant_codes"], plant_code))
-                    status = "SUCCESS" if allowed else "FAILED"
-                    adapter_payload = {
+        for plant_code, target, code in execution_tasks:
+            master = known.get(code)
+            allowed = bool(master and _master_distributable_to_plant(master["plant_codes"], plant_code))
+            status = "SUCCESS" if allowed else "FAILED"
+            adapter_payload = {
                         "event_id": f"DIST-{uuid.uuid4().hex[:12].upper()}",
                         "target_system": target, "target_plant": plant_code,
                         "mdm_code": code, "material_name": (master or {}).get("standard_name", ""),
@@ -4390,11 +5506,11 @@ def distribute():
                         "pressure": (master or {}).get("pressure", ""), "material": (master or {}).get("material", ""),
                         "mode": mode, "issued_at": _utc_now(),
                     }
-                    adapter_payload["payload_hash"] = hashlib.sha256(
-                        _canonical_json(adapter_payload).encode("utf-8")
-                    ).hexdigest()
-                    message = "分发适配器已生成可交付载荷" if allowed else "主数据未批准或不在当前工厂范围"
-                    cursor = conn.execute(
+            adapter_payload["payload_hash"] = hashlib.sha256(
+                _canonical_json(adapter_payload).encode("utf-8")
+            ).hexdigest()
+            message = "分发适配器已生成可交付载荷" if allowed else "主数据未批准或不在当前工厂范围"
+            cursor = conn.execute(
                         """INSERT INTO distribution_logs
                            (batch_id, target_system, mdm_code, standard_name, sync_mode, sync_frequency,
                             status, message, plant_code, instruction, payload_json)
@@ -4403,19 +5519,19 @@ def distribute():
                          status, message, plant_code, instruction,
                          json.dumps(adapter_payload, ensure_ascii=False)),
                     )
-                    log = {
+            log = {
                         "id": cursor.lastrowid, "target_system": target, "mdm_code": code,
                         "standard_name": (master or {}).get("standard_name", ""), "sync_mode": mode,
                         "sync_frequency": "MANUAL", "status": status, "message": message,
                         "plant_code": plant_code, "instruction": instruction, "payload": adapter_payload,
                     }
-                    logs.append(log)
-                    if allowed:
-                        artifacts.append({
+            logs.append(log)
+            if allowed:
+                artifacts.append({
                             "artifact_id": adapter_payload["event_id"], "target_system": target,
                             "plant_code": plant_code, "mdm_code": code,
                             "payload_hash": adapter_payload["payload_hash"], "status": "DELIVERED",
-                        })
+                })
         success_count = sum(item["status"] == "SUCCESS" for item in logs)
         failed_count = sum(item["status"] == "FAILED" for item in logs)
         if success_count:
@@ -4431,17 +5547,18 @@ def distribute():
             plant_artifacts = [item for item in artifacts if item["plant_code"] == plant_code]
             _append_audit_block(conn, batch_id, "MASTER_DISTRIBUTED", "DISTRIBUTION", plant_code, {
                 "target_systems": targets, "master_codes": master_codes,
+                "selected_tasks": execution_tasks,
                 "artifact_hashes": [item["payload_hash"] for item in plant_artifacts],
                 "success_count": len(plant_artifacts),
                 "failed_count": sum(item["plant_code"] == plant_code and item["status"] == "FAILED" for item in logs),
                 "mode": mode, "instruction": instruction, "filters": filters,
-            }, actor=_clean_value(payload.get("actor")) or "分发Agent")
+            }, actor=_current_actor(_clean_value(payload.get("actor")) or "分发Agent"))
     primary_plant = target_plants[0]
     return jsonify({
         "simulated": True, "intent": intent, "plant_code": primary_plant,
         "plant_name": PLANTS[primary_plant], "target_plants": target_plants,
         "target_systems": targets, "filters": filters, "master_codes": master_codes,
-        "logs": logs, "artifacts": artifacts,
+        "logs": logs, "artifacts": artifacts, "selected_task_count": len(execution_tasks),
         "success_count": success_count,
         "failed_count": failed_count,
         "workflow_endpoint": f"/api/workflow/{batch_id}",
@@ -4454,7 +5571,7 @@ def submit_plant_feedback():
     mdm_code = _clean_value(payload.get("mdm_code"))
     if not mdm_code:
         return jsonify({"error": "mdm_code is required"}), 400
-    plant_code = _normalize_plant_code(payload.get("plant_code"))
+    plant_code = _effective_plant_code(payload.get("plant_code"))
     if plant_code not in PLANTS or plant_code == "GROUP":
         return jsonify({"error": "plant_code must identify a factory", "supported_plants": PLANTS}), 400
     try:
@@ -4490,7 +5607,7 @@ def submit_plant_feedback():
                (batch_id, plant_code, mdm_code, accepted, rating, comment, actor, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (batch_id, plant_code, mdm_code, int(accepted), rating, _clean_value(payload.get("comment")),
-             _clean_value(payload.get("actor")) or "工厂数据管理员", now),
+             _current_actor(_clean_value(payload.get("actor")) or "工厂数据管理员"), now),
         )
         vector_meta = _index_batch_vectors(conn, batch_id, "local")
         feedback_count = conn.execute("SELECT COUNT(*) FROM plant_feedback WHERE batch_id = ?", (batch_id,)).fetchone()[0]
@@ -4523,7 +5640,7 @@ def submit_plant_feedback():
             "feedback_id": cursor.lastrowid, "plant_code": plant_code, "accepted": accepted,
             "rating": rating, "comment": _clean_value(payload.get("comment")),
             "knowledge_refresh": vector_meta,
-        }, actor=_clean_value(payload.get("actor")) or f"{PLANTS[plant_code]}数据管理员")
+        }, actor=_current_actor(_clean_value(payload.get("actor")) or f"{PLANTS[plant_code]}数据管理员"))
         workflow = _workflow_payload(conn, batch_id)
     return jsonify({
         "id": cursor.lastrowid, "batch_id": batch_id, "plant_code": plant_code, "mdm_code": mdm_code,
@@ -4545,14 +5662,30 @@ def clear_all_data():
     if payload.get("confirm") != "DELETE_ALL_DATA":
         return jsonify({"error": "confirmation token is required"}), 400
     with db_connect() as conn:
+        held = _rows(
+            conn,
+            """SELECT batch_id, filename, data_classification FROM batches
+                 WHERE legal_hold = 1 ORDER BY created_at""",
+        )
+        if held:
+            return jsonify({
+                "error": "data purge is blocked by active legal hold", "code": "LEGAL_HOLD_ACTIVE",
+                "blocked_batches": held,
+            }), 409
         for table in (
-            "audit_blocks", "plant_feedback", "workflow_steps", "vector_embeddings",
+            "audit_blocks", "plant_feedback", "workflow_steps",
             "distribution_logs", "lifecycle", "search_history", "quality_reports", "reviews",
             "mappings", "batch_masters", "records", "batches", "masters",
         ):
             conn.execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM vector_embeddings WHERE batch_id IS NOT NULL OR namespace != 'standard_kb'")
         _seed_standard_kb(conn)
-    return jsonify({"cleared": True})
+    enterprise_security.record_event(
+        "BUSINESS_DATA_PURGED", "SUCCESS", "all-business-data", {"knowledge_preserved": True},
+        getattr(g, "principal", None), g.trace_id, request.remote_addr or "",
+    )
+    g.security_event_recorded = True
+    return jsonify({"cleared": True, "knowledge_preserved": True, "security_audit_preserved": True})
 
 
 @app.errorhandler(413)
@@ -4566,7 +5699,67 @@ def internal_error(error):
     return jsonify({"error": "internal server error"}), 500
 
 
+def _rag_env_number(name: str, default, converter):
+    try:
+        return converter(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("invalid %s; using %s", name, default)
+        return default
+
+
+rag_config = RAGConfig.from_mapping({
+    "dimension": _rag_env_number("MDM_RAG_DIMENSION", 384, int),
+    "rule_weight": _rag_env_number("MDM_RAG_RULE_WEIGHT", 0.45, float),
+    "lexical_weight": _rag_env_number("MDM_RAG_LEXICAL_WEIGHT", 0.30, float),
+    "vector_weight": _rag_env_number("MDM_RAG_VECTOR_WEIGHT", 0.25, float),
+    "auto_accept_threshold": _rag_env_number("MDM_RAG_AUTO_ACCEPT_THRESHOLD", 0.68, float),
+    "minimum_margin": _rag_env_number("MDM_RAG_MINIMUM_MARGIN", 0.08, float),
+    "default_top_k": _rag_env_number("MDM_RAG_TOP_K", 3, int),
+    "audit_queries": os.environ.get("MDM_RAG_AUDIT_QUERIES", "1") != "0",
+})
+os.environ.setdefault("MDM_SECURITY_DIR", str(PROJECT_DIR / "runtime" / "data"))
+enterprise_governance = EnterpriseGovernance()
+enterprise_security = EnterpriseSecurity(app, db_connect, DB_PATH, logger, PLANTS)
+enterprise_rag = EnterpriseRAG(DB_PATH, config=rag_config)
 init_db()
+
+
+def _bootstrap_enterprise_rag() -> None:
+    if os.environ.get("MDM_RAG_ENABLED", "1") == "0" or os.environ.get("MDM_RAG_AUTO_IMPORT", "1") == "0":
+        return
+    if enterprise_rag.stats().get("count"):
+        return
+    source = Path(os.environ.get(
+        "MDM_RAG_SOURCE_PATH", str(PROJECT_DIR / "SY_T5497-2018备品备件分类树(1).xlsx")
+    )).expanduser()
+    if not source.is_absolute():
+        source = PROJECT_DIR / source
+    try:
+        imported = enterprise_rag.import_xlsx(
+            source, version_label=os.environ.get("MDM_RAG_VERSION", "2018"), actor="system-bootstrap",
+            notes="M-AI Master enterprise standard bootstrap",
+            allowed_plants=[item.strip().upper() for item in os.environ.get("MDM_RAG_ALLOWED_PLANTS", "*").split(",") if item.strip()],
+            allowed_classifications=[item.strip().upper() for item in os.environ.get(
+                "MDM_RAG_ALLOWED_CLASSIFICATIONS", "INTERNAL,CONFIDENTIAL,RESTRICTED"
+            ).split(",") if item.strip()],
+            security_classification=os.environ.get("MDM_RAG_CLASSIFICATION", "INTERNAL"),
+            expected_counts={"entries": 72, "aliases": 12, "references": 10},
+        )
+        status = imported["status"]
+        version_id = imported["version_id"]
+        if status == "DRAFT":
+            imported = enterprise_rag.validate_version(version_id, actor="system-bootstrap")
+            status = imported["status"]
+        if status == "VALIDATED":
+            enterprise_rag.publish_version(version_id, actor="system-bootstrap")
+        elif status == "RETIRED":
+            enterprise_rag.rollback_version(version_id, actor="system-bootstrap")
+        logger.info("enterprise RAG ready: %s", enterprise_rag.stats())
+    except Exception:
+        logger.exception("enterprise RAG bootstrap failed; legacy standard index remains available")
+
+
+_bootstrap_enterprise_rag()
 
 
 if __name__ == "__main__":
@@ -4576,6 +5769,10 @@ if __name__ == "__main__":
     production = os.environ.get("MDM_PRODUCTION") == "1"
     print("M-AI Master Flask backend")
     print(f"Listening on http://{host}:{port}")
+    print(f"Security mode: {enterprise_security.mode}")
+    if enterprise_security.initial_credentials_path.is_file():
+        print(f"Initial enterprise credentials: {enterprise_security.initial_credentials_path}")
+        print("Change all generated passwords after first sign-in; do not share this file.")
     if production:
         from waitress import serve
 

@@ -6,7 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MDM_PORT=5000 \
     MDM_PRODUCTION=1 \
     MDM_DB_PATH=/app/data/mdm_data.db \
-    MDM_LOG_DIR=/app/logs
+    MDM_LOG_DIR=/app/logs \
+    MDM_SECURITY_MODE=enterprise \
+    MDM_SECURITY_DIR=/app/data \
+    MDM_RAG_SOURCE_PATH=/app/SY_T5497-2018备品备件分类树(1).xlsx
 
 WORKDIR /app
 
@@ -18,6 +21,7 @@ RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt && \
 COPY backend /app/backend
 COPY evaluation /app/evaluation
 COPY ["备品备件脏数据.csv", "/app/备品备件脏数据.csv"]
+COPY ["SY_T5497-2018备品备件分类树(1).xlsx", "/app/SY_T5497-2018备品备件分类树(1).xlsx"]
 RUN mkdir -p /app/data /app/logs
 
 WORKDIR /app/backend

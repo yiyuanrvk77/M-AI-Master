@@ -12,5 +12,9 @@ backend/*.db-shm
 backend/*.sqlite
 backend/*.sqlite3
 *.log
+**/initial-credentials.txt
+**/*signing.key
 *.py[cod]
 **/__pycache__/
+tmp/
+~$*.docx

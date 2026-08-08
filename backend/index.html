@@ -28,6 +28,15 @@ catch (_error) { document.documentElement.dataset.theme = "dark"; }
 :root[data-theme="light"] .home-status-box{background:rgba(255,255,255,.88);border-color:#d5deea;box-shadow:0 12px 28px rgba(15,23,42,.08)}
 :root[data-theme="light"] .home-status-box .mini{background:#edf3fa}
 :root[data-theme="light"] .modal{box-shadow:0 20px 70px rgba(15,23,42,.18)}
+:root[data-theme="light"] .module-card{background:#fff;border-color:#d5deea;box-shadow:0 4px 14px rgba(15,23,42,.08)}
+:root[data-theme="light"] .module-card:hover{background:#f8fbff;border-color:#8bb8ff;box-shadow:0 10px 24px rgba(37,99,235,.14)}
+:root[data-theme="light"] .module-card::after{background:none}
+:root[data-theme="light"] .module-card .mc-title{color:#172033}
+:root[data-theme="light"] .module-card .mc-desc{color:#52627a}
+:root[data-theme="light"] .module-card .mc-foot{border-top-color:#dbe4ef;color:#2563eb}
+:root[data-theme="light"] .module-card .mc-stat{color:#77869d}
+:root[data-theme="light"] .graph-canvas-shell{background:#f8fbff}
+:root[data-theme="light"] .graph-node-detail{background:#f6f9fd}
 html,body{height:100%}
 body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;background:var(--bg);color:var(--t);min-height:100vh;font-size:13px;line-height:1.5}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
@@ -40,6 +49,9 @@ body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;b
 .engine-status .dot{width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
 .view-switch{width:126px;padding:6px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;color:var(--t2);font-size:11px;outline:none}
 .theme-toggle{width:32px;height:32px;padding:0;justify-content:center;background:var(--bg);border:1px solid var(--bd);color:var(--t);border-radius:7px}
+.account-btn{max-width:180px;min-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;justify-content:center}
+.login-shell{display:grid;gap:14px}.login-brand{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--bd)}
+.login-brand .logo-i{width:36px;height:36px}.login-error{min-height:18px;color:var(--d);font-size:11px}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 currentColor}50%{opacity:.7;box-shadow:0 0 0 6px transparent}}
 .tabs{display:flex;gap:2px;flex-wrap:wrap}
 .tab{padding:7px 12px;border-radius:7px;cursor:pointer;font-size:12px;color:var(--t2);transition:.15s;border:none;background:0;font-family:inherit}
@@ -47,6 +59,21 @@ body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;b
 .wrap{max-width:1440px;margin:0 auto;padding:18px 24px}
 .page{display:none;animation:fadein .25s ease}.page.on{display:block}
 @keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.agent-workspace-nav{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;margin-bottom:12px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r)}
+.agent-workspace-brand{display:flex;align-items:center;gap:11px;min-width:220px}.agent-workspace-brand .icon{width:34px;height:34px;border-radius:8px;background:rgba(59,130,246,.13);color:var(--pl);display:flex;align-items:center;justify-content:center;font-weight:800}
+.agent-workspace-brand strong{display:block;font-size:14px}.agent-workspace-brand span{display:block;margin-top:2px;font-size:10px;color:var(--t3)}
+.agent-mode-tabs{display:flex;align-items:stretch;gap:4px;padding:4px;background:var(--bg);border:1px solid var(--bd);border-radius:9px;min-width:0}
+.agent-mode-tab{min-width:154px;padding:8px 11px;border:0;border-radius:6px;background:transparent;color:var(--t2);font-family:inherit;text-align:left;cursor:pointer;transition:.15s}
+.agent-mode-tab:hover{background:var(--bg2);color:var(--t)}.agent-mode-tab.on{background:var(--p);color:#fff;box-shadow:0 2px 8px rgba(26,86,219,.28)}
+.agent-mode-tab strong{display:block;font-size:11px;letter-spacing:0}.agent-mode-tab span{display:block;margin-top:2px;font-size:9px;color:inherit;opacity:.76;white-space:nowrap}
+.agent-workspace-panel{display:none}.agent-workspace-panel.on{display:block;animation:fadein .18s ease}
+.agent-scope{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px}.agent-scope .tag{font-weight:600}
+.agent-command-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center}
+.agent-unified-card{padding:18px 20px}.agent-unified-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}.agent-unified-lead{font-size:11px;color:var(--t3);line-height:1.65;margin:4px 0 12px}.agent-composer{display:grid;grid-template-columns:minmax(0,1fr) 42px auto;gap:8px;align-items:end}.agent-composer textarea{min-height:70px;resize:vertical}.agent-voice-btn{width:42px;height:42px;padding:0;justify-content:center;border:1px solid var(--bd);background:var(--bg);color:var(--t2);font-size:17px}.agent-voice-btn.active{color:#fff;background:var(--d);border-color:var(--d);animation:pulse 1.2s infinite}.agent-voice-status{min-height:18px;color:var(--t3);font-size:10px;margin-top:5px}.agent-quick-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.agent-quick-actions .tag{cursor:pointer;font-weight:600}.agent-quick-actions .tag:hover{border-color:var(--p);color:var(--pl)}.agent-intent-bar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px;padding:9px 11px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;font-size:11px}.agent-result-stack{display:grid;gap:10px;margin-top:12px}.agent-result-card{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:12px}.agent-result-card h4{font-size:12px;margin:0 0 7px}.distribution-task-list{display:grid;gap:7px;margin-top:10px}.distribution-task{display:grid;grid-template-columns:22px minmax(0,1.2fr) minmax(170px,.8fr) auto;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--bg2)}.distribution-task.selected{border-color:rgba(16,185,129,.62);box-shadow:inset 3px 0 0 var(--s)}.distribution-task input{width:16px;height:16px;accent-color:var(--s)}.distribution-task-name{font-weight:700;color:var(--t);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.distribution-task-meta{font-size:10px;color:var(--t3);margin-top:3px}.distribution-score{text-align:right;font-weight:800;color:var(--s);white-space:nowrap}.distribution-reasons{font-size:10px;color:var(--t2);line-height:1.55}.agent-control-line{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px}.agent-control-line .summary{font-size:11px;color:var(--t2);margin-right:auto}.agent-plan-step{display:flex;gap:8px;padding:7px 0;border-top:1px solid var(--bd);font-size:11px;color:var(--t2)}.agent-plan-step:first-child{border-top:0}.agent-plan-step b{color:var(--pl);min-width:18px}.graph-view-toggle{display:inline-flex;gap:3px;padding:3px;background:var(--bg);border:1px solid var(--bd);border-radius:7px}.graph-view-toggle button{border:0;background:transparent;color:var(--t2);font:inherit;font-size:10px;padding:4px 8px;border-radius:5px;cursor:pointer}.graph-view-toggle button.on{background:var(--p);color:#fff}.sankey-shell{height:560px;border:1px solid var(--bd);border-radius:8px;overflow:auto;background:linear-gradient(180deg,var(--bg2),var(--bg));padding:0}.sankey-shell svg{width:100%;min-width:1180px;height:100%;display:block}.sankey-section{fill:var(--bg2);stroke:var(--bd);stroke-width:1}.sankey-section-title{font-size:10px;font-weight:700;fill:var(--t3)}.sankey-stage-card{fill:var(--bg2);stroke-width:1}.sankey-stage-title{font-size:10px;font-weight:700;fill:var(--t)}.sankey-stage-meta{font-size:9px;fill:var(--t3)}.sankey-node-label{font-size:10px;font-weight:700;fill:var(--t2)}.sankey-value-label{font-size:9px;fill:var(--t3)}.sankey-link{fill:none;stroke-linecap:round;opacity:.3;transition:opacity .15s}.sankey-link-current{fill:none;stroke-linecap:round;stroke-dasharray:3 16;opacity:.75;pointer-events:none;animation:sankey-flow 2.4s linear infinite}.sankey-node{cursor:pointer;outline:none}.sankey-node:hover .sankey-stage-card,.sankey-node:focus .sankey-stage-card{stroke-width:2;filter:drop-shadow(0 5px 8px rgba(15,23,42,.16))}.sankey-node:hover .sankey-flow-bar,.sankey-node:focus .sankey-flow-bar{stroke:var(--t);stroke-width:2}.sankey-legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--t3);font-size:10px}@keyframes sankey-flow{to{stroke-dashoffset:-38}}@media(prefers-reduced-motion:reduce){.sankey-link-current{animation:none}}
+.sankey-link-current{stroke-dasharray:3 24;opacity:.92;animation:sankey-flow 1.85s linear infinite;filter:drop-shadow(0 0 2px currentColor)}.sankey-node.sankey-active .sankey-stage-card{animation:sankey-active 1.8s ease-in-out infinite}@keyframes sankey-active{0%,100%{filter:drop-shadow(0 0 0 rgba(59,130,246,0))}50%{filter:drop-shadow(0 0 9px rgba(59,130,246,.32))}}@media(prefers-reduced-motion:reduce){.sankey-link-current,.sankey-node.sankey-active .sankey-stage-card{animation:none}}
+@media(max-width:900px){.agent-workspace-nav{align-items:stretch;flex-direction:column}.agent-mode-tabs{width:100%;overflow-x:auto}.agent-mode-tab{flex:1 0 145px}}
+@media(max-width:700px){.agent-command-row{grid-template-columns:1fr}.agent-command-row .btn{justify-content:center}.agent-composer{grid-template-columns:1fr 42px}.agent-composer .agent-submit{grid-column:1/-1;justify-content:center}.distribution-task{grid-template-columns:22px minmax(0,1fr) auto}.distribution-task .distribution-reasons{grid-column:2/-1}.distribution-task .distribution-score{grid-column:3;grid-row:1}.sankey-shell{height:430px}}
+@media(max-width:560px){.agent-workspace-nav{padding:12px}.agent-mode-tab{min-width:132px;padding:8px}.agent-mode-tab span{display:none}}
 .card{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:18px;margin-bottom:14px}
 .card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px}
 .card-title{font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
@@ -64,12 +91,13 @@ body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;b
 .btn-ghost{background:transparent;color:var(--t2);border:1px dashed var(--bd)}
 .btn-ghost:hover:not(:disabled){color:var(--t);border-color:var(--t2)}
 .btn-sm{padding:4px 9px;font-size:11px}.btn-lg{padding:10px 18px;font-size:13px}
-.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:.3px;line-height:1.5}
+.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:0;line-height:1.5}
 .tag-merge{background:rgba(6,182,212,.15);color:#22d3ee;border:1px solid rgba(6,182,212,.3)}
 .tag-warn{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)}
 .tag-new{background:rgba(139,92,246,.15);color:#c084fc;border:1px solid rgba(139,92,246,.3)}
 .tag-ok{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)}
 .tag-err{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3)}
+.tag-danger{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3)}
 .tag-info{background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.3)}
 .tag-muted{background:rgba(148,163,184,.1);color:var(--t2);border:1px solid rgba(148,163,184,.2)}
 .input,.select,.textarea{width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;color:var(--t);font-size:12px;outline:none;font-family:inherit;transition:.15s}
@@ -78,7 +106,7 @@ body{font-family:'Segoe UI','Microsoft YaHei',PingFang SC,Helvetica,sans-serif;b
 .input-search input{padding-left:34px}
 .tbl-wrap{overflow-x:auto;border:1px solid var(--bd);border-radius:10px;max-height:520px;overflow-y:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}thead{position:sticky;top:0;background:var(--bg2);z-index:5}
-th{padding:10px;text-align:left;font-weight:700;color:var(--t2);font-size:11px;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--bd);white-space:nowrap}
+th{padding:10px;text-align:left;font-weight:700;color:var(--t2);font-size:11px;text-transform:uppercase;letter-spacing:0;border-bottom:1px solid var(--bd);white-space:nowrap}
 td{padding:9px 10px;border-bottom:1px solid rgba(51,65,85,.4);vertical-align:top}
 tbody tr:hover{background:var(--bg3)}tbody tr.clickable{cursor:pointer}
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px}
@@ -280,11 +308,10 @@ tbody tr:hover{background:var(--bg3)}tbody tr.clickable{cursor:pointer}
 .home-status-box .mini{background:var(--bg);border-radius:8px;padding:8px;text-align:center}
 .home-status-box .mini .n{font-size:16px;font-weight:800;color:var(--pl)}
 .home-status-box .mini .t{font-size:10px;color:var(--t3);margin-top:2px}
-.module-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
-@media(max-width:1280px){.module-grid{grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px}}
-@media(max-width:960px){.module-grid{grid-template-columns:repeat(4,1fr);gap:10px}}
-@media(max-width:560px){.module-grid{grid-template-columns:repeat(2,1fr)}}
-.module-card{background:linear-gradient(165deg,rgba(36,48,72,.98) 0%,rgba(15,23,42,.95) 100%);border:1px solid rgba(71,85,105,.55);border-radius:12px;padding:14px 12px 12px;cursor:pointer;transition:.2s;position:relative;overflow:hidden;min-height:152px;display:flex;flex-direction:column;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+.module-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+@media(max-width:1100px){.module-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
+@media(max-width:560px){.module-grid{grid-template-columns:1fr}}
+.module-card{background:linear-gradient(165deg,rgba(36,48,72,.98) 0%,rgba(15,23,42,.95) 100%);border:1px solid rgba(71,85,105,.55);border-radius:12px;padding:13px 14px 11px;cursor:pointer;transition:.2s;position:relative;overflow:hidden;min-height:132px;display:flex;flex-direction:column;box-shadow:0 4px 14px rgba(0,0,0,.2)}
 .module-card:hover{transform:translateY(-3px);border-color:rgba(96,165,250,.55);box-shadow:0 10px 24px rgba(26,86,219,.25);background:linear-gradient(165deg,rgba(45,58,90,.99) 0%,rgba(20,32,56,.98) 100%)}
 .module-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;opacity:1}
 .module-card::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 20% 0%,rgba(255,255,255,.04),transparent 55%);pointer-events:none}
@@ -308,13 +335,55 @@ tbody tr:hover{background:var(--bg3)}tbody tr.clickable{cursor:pointer}
 .flow-node.action_required{border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.08);color:var(--w)}
 .flow-node.ready{border-color:rgba(59,130,246,.5);background:rgba(59,130,246,.08);color:#93c5fd}
 .flow-node .flow-state{display:block;margin-top:4px;font-size:9px;color:var(--t3)}
-.tech-workbench{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:12px}
-.graph-stage{width:100%;height:340px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+.governance-center{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);margin-bottom:14px;overflow:hidden}
+.governance-center-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px 14px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.governance-center-title{font-size:17px;font-weight:800;display:flex;align-items:center;gap:10px}.governance-center-title .icon{width:34px;height:34px;border-radius:8px;background:rgba(139,92,246,.13);color:var(--pu);display:flex;align-items:center;justify-content:center}
+.governance-center-sub{font-size:11px;color:var(--t3);margin:5px 0 0 44px;line-height:1.6}
+.governance-flow{display:grid;grid-template-columns:repeat(var(--workflow-count,1),minmax(105px,1fr));gap:6px;padding:12px 20px;border-bottom:1px solid var(--bd);overflow-x:auto}
+.governance-flow-step{min-width:105px;padding:9px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;color:var(--t2);cursor:pointer;outline:none}.governance-flow-step:hover,.governance-flow-step:focus{border-color:var(--p)}
+.governance-flow-step.done{border-color:rgba(16,185,129,.52);background:rgba(16,185,129,.07)}.governance-flow-step.action{border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.07)}.governance-flow-step.ready{border-color:rgba(59,130,246,.52);background:rgba(59,130,246,.07)}
+.governance-flow-name{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.governance-flow-proof{font-size:9px;color:var(--t3);margin-top:4px;font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.governance-flow-step.done .governance-flow-proof{color:var(--s)}
+.governance-graph-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;min-height:580px}
+.graph-canvas-shell{min-width:0;background:var(--bg);padding:14px 16px 12px}
+.graph-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.graph-metrics,.graph-legend{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:10px;color:var(--t3)}
+.graph-metrics strong{color:var(--t);font-size:12px}.graph-legend i{font-style:normal}
+.graph-stage-large{height:520px;border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--bg)}
+.graph-node-detail{border-left:1px solid var(--bd);background:rgba(15,23,42,.2);padding:16px;min-width:0;overflow:auto}
+.graph-detail-kicker{font-size:9px;color:var(--t3);text-transform:uppercase;margin-bottom:5px}.graph-detail-title{font-size:14px;font-weight:800;line-height:1.45;word-break:break-word}.graph-detail-meta{font-size:10px;color:var(--t3);margin:4px 0 12px}
+.graph-evidence{padding:10px 0;border-top:1px solid var(--bd)}.graph-evidence-label{font-size:10px;color:var(--t3);margin-bottom:5px}.graph-hash{font-family:Consolas,monospace;font-size:9px;color:var(--a);word-break:break-all;line-height:1.6}
+.graph-relation-list{display:grid;gap:5px;max-height:210px;overflow:auto}.graph-relation{width:100%;padding:7px 8px;border:1px solid var(--bd);border-radius:6px;background:transparent;text-align:left;font-family:inherit;font-size:10px;color:var(--t2);cursor:pointer}.graph-relation:hover{border-color:var(--p);background:rgba(59,130,246,.06)}.graph-relation strong{display:block;color:var(--t);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.graph-guidance{padding:9px 16px;border-top:1px solid var(--bd);font-size:10px;color:var(--t3);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .vector-results{margin-top:10px;display:grid;gap:6px;max-height:230px;overflow:auto}
 .vector-hit{padding:9px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;font-size:11px}
 .vector-hit .score{color:var(--s);font-weight:800;font-family:Consolas,monospace}
+.kb-index-overview{display:grid;grid-template-columns:minmax(250px,1.45fr) repeat(3,minmax(125px,.7fr));gap:9px;margin:12px 0}.kb-index-intro,.kb-index-metric{padding:12px;border:1px solid var(--bd);border-radius:8px;background:var(--bg)}.kb-index-intro strong{display:block;font-size:12px;margin-bottom:4px}.kb-index-intro span{font-size:10px;color:var(--t3);line-height:1.55}.kb-index-metric span{display:block;font-size:9px;color:var(--t3);margin-bottom:5px}.kb-index-metric strong{display:block;font-size:15px}.kb-index-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.kb-verify{margin-top:12px;border-top:1px solid var(--bd);padding-top:10px}.kb-verify summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px dashed var(--bd);border-radius:7px;color:var(--t2);font-size:11px;font-weight:700}.kb-verify summary::-webkit-details-marker{display:none}.kb-verify summary::after{content:'展开';font-size:9px;color:var(--pl);font-weight:600}.kb-verify[open] summary::after{content:'收起'}.kb-verify-body{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding-top:10px}.kb-test-block{padding:11px;background:var(--bg);border:1px solid var(--bd);border-radius:8px}.kb-test-block h4{font-size:11px;margin-bottom:4px}.kb-test-block p{font-size:9px;color:var(--t3);margin-bottom:8px}@media(max-width:900px){.kb-index-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.kb-index-intro{grid-column:1/-1}.kb-verify-body{grid-template-columns:1fr}}@media(max-width:560px){.kb-index-overview{grid-template-columns:1fr}.kb-index-intro{grid-column:auto}}
+.agent-knowledge-evidence{margin:9px 0 11px;padding:10px 11px;border:1px solid rgba(139,92,246,.28);border-left:3px solid var(--pu);border-radius:7px;background:rgba(139,92,246,.045)}.agent-knowledge-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.agent-knowledge-head strong{font-size:11px}.agent-knowledge-head span{font-size:9px;color:var(--t3)}.agent-knowledge-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.agent-knowledge-item{padding:8px 9px;background:var(--bg2);border:1px solid var(--bd);border-radius:6px;min-width:0}.agent-knowledge-item strong{display:block;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.agent-knowledge-item span{display:block;margin-top:3px;font-size:9px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.agent-knowledge-item b{color:var(--pu);font-family:Consolas,monospace;font-size:9px}@media(max-width:760px){.agent-knowledge-list{grid-template-columns:1fr}}
+.agent-input-tools{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px}.agent-image-input{display:none}.agent-image-tool{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:5px 9px;border:1px dashed var(--bd);border-radius:7px;background:var(--bg);color:var(--t2);font-size:10px;font-weight:700;cursor:pointer}.agent-image-tool:hover{border-color:var(--a);color:var(--a)}.agent-image-name{font-size:10px;color:var(--t3);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.agent-ocr-result{margin-top:10px}.agent-ocr-result .card{margin-bottom:0;padding:12px;background:var(--bg)}
 .agent-result{margin-top:10px;padding:11px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;font-size:11px;color:var(--t2);line-height:1.7}
-@media(max-width:900px){.tech-workbench{grid-template-columns:1fr}.graph-stage{height:300px}}
+.compliance-strip{display:grid;grid-template-columns:minmax(260px,1.55fr) repeat(6,minmax(115px,1fr));align-items:stretch;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);margin-bottom:16px;overflow:hidden}
+.compliance-intro{padding:13px 16px;border-right:1px solid var(--bd);display:flex;flex-direction:column;justify-content:center;gap:3px}
+.compliance-intro strong{font-size:13px;color:var(--t);display:flex;align-items:center;gap:7px}
+.compliance-intro span{font-size:10px;color:var(--t3);line-height:1.5}
+.compliance-cell{padding:11px 12px;min-width:0;border-right:1px solid var(--bd);display:flex;flex-direction:column;justify-content:center;gap:4px}
+.compliance-cell:last-child{border-right:0}
+.compliance-label{font-size:10px;color:var(--t3)}
+.compliance-value{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.compliance-value.ok{color:var(--s)}.compliance-value.warn{color:var(--w)}.compliance-value.danger{color:var(--d)}.compliance-value.muted{color:var(--t2)}
+.compliance-step-control{display:flex;align-items:center;gap:4px;margin-top:6px;font-size:9px;color:var(--s)}.compliance-step-control.warn{color:var(--w)}.compliance-step-control.danger{color:var(--d)}
+.compliance-drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.38);z-index:1998;backdrop-filter:blur(2px)}
+.compliance-drawer{position:fixed;top:0;right:0;z-index:1999;width:min(440px,94vw);height:100vh;background:var(--bg2);border-left:1px solid var(--bd);box-shadow:-18px 0 50px rgba(15,23,42,.25);display:flex;flex-direction:column}
+.compliance-drawer-head{padding:18px 20px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.compliance-drawer-head h3{font-size:16px;margin:0}.compliance-drawer-head p{font-size:10px;color:var(--t3);margin:4px 0 0;line-height:1.55}.compliance-drawer-body{padding:16px 20px 24px;overflow:auto;display:grid;gap:10px}.compliance-evidence-card{padding:11px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px}.compliance-evidence-card .label{font-size:9px;color:var(--t3);margin-bottom:4px}.compliance-evidence-card .value{font-size:12px;font-weight:700;color:var(--t);word-break:break-word}.compliance-evidence-card .detail{font-size:10px;color:var(--t2);line-height:1.6;margin-top:4px}.compliance-evidence-hash{font:9px/1.6 Consolas,monospace;color:var(--a);word-break:break-all}
+.distribution-policy-preview{margin-top:10px;padding:10px 11px;border:1px solid rgba(16,185,129,.38);background:rgba(16,185,129,.055);border-radius:8px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center}.distribution-policy-preview.blocked{border-color:rgba(239,68,68,.42);background:rgba(239,68,68,.055)}.distribution-policy-icon{width:30px;height:30px;border-radius:7px;background:rgba(16,185,129,.13);color:var(--s);display:flex;align-items:center;justify-content:center;font-weight:800}.distribution-policy-preview.blocked .distribution-policy-icon{background:rgba(239,68,68,.13);color:var(--d)}.distribution-policy-title{font-size:11px;font-weight:800}.distribution-policy-detail{font-size:9px;color:var(--t3);margin-top:3px;line-height:1.55}
+.ingest-policy{display:grid;grid-template-columns:minmax(240px,1.4fr) minmax(190px,.75fr);gap:12px;align-items:end;margin-top:12px;padding:11px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:9px}
+.ingest-policy-copy{font-size:11px;color:var(--t2);line-height:1.6}.ingest-policy-copy strong{display:block;color:var(--t);font-size:12px;margin-bottom:2px}
+.ingest-policy-copy span{color:var(--t3)}
+@media(max-width:1100px){.compliance-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.compliance-intro{grid-column:1/-1;border-right:0;border-bottom:1px solid var(--bd)}.compliance-cell:nth-child(3){border-right:0}.compliance-cell:nth-child(4),.compliance-cell:nth-child(5){border-top:1px solid var(--bd)}}
+@media(max-width:560px){.compliance-strip{grid-template-columns:1fr}.compliance-intro{grid-column:auto}.compliance-cell{border-right:0;border-top:1px solid var(--bd)}.compliance-cell:nth-child(3){border-right:0}.ingest-policy{grid-template-columns:1fr}}
+@media(max-width:560px){.distribution-policy-preview{grid-template-columns:auto 1fr}.distribution-policy-preview .btn{grid-column:1/-1;justify-content:center}.compliance-drawer-head,.compliance-drawer-body{padding-left:14px;padding-right:14px}}
+@media(max-width:1050px){.governance-graph-grid{grid-template-columns:1fr}.graph-node-detail{border-left:0;border-top:1px solid var(--bd)}.graph-stage-large{height:460px}}
+@media(max-width:900px){.governance-flow{grid-template-columns:repeat(4,minmax(115px,1fr))}.graph-stage-large{height:400px}.governance-center-sub{margin-left:0}}
+@media(max-width:560px){.governance-center-head{padding:14px}.governance-flow{padding:10px 14px;grid-template-columns:repeat(2,minmax(125px,1fr));overflow:visible}.governance-graph-grid{min-height:0}.graph-canvas-shell{padding:10px}.graph-stage-large{height:340px}}
 .flow-arrow{color:var(--t3);font-size:14px;flex-shrink:0}
 @media(max-width:1050px){.home-hero-inner{grid-template-columns:1fr}.home-main,.home-status-box{grid-column:1}.home-status-box{justify-self:center;width:min(100%,320px);margin-top:20px}}
 @media(max-width:960px){.home-title{font-size:26px}.home-desc{font-size:14px}}
@@ -328,13 +397,14 @@ tbody tr:hover{background:var(--bg3)}tbody tr.clickable{cursor:pointer}
   <div class="nav-right">
     <select class="view-switch" id="plantView" onchange="changePlantView(this.value)" title="切换集团或工厂演示视角"><option value="GROUP">集团总部视角</option><option value="SHANGHAI">上海工厂视角</option><option value="BEIJING">北京工厂视角</option></select>
     <button class="btn theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换浅色模式" aria-label="切换浅色或深色主题"><span id="themeIcon">☀</span></button>
+    <button class="btn btn-secondary btn-sm account-btn" id="accountButton" type="button" title="账户与安全">👤 未登录</button>
     <div class="engine-status idle" id="engineStatus"><span class="dot"></span><span id="engineStatusText">等待接入数据</span></div>
     <div class="tabs" id="tabs">
       <button class="tab on" data-page="home">🏠 首页</button>
       <button class="tab" data-page="ingest">📥 批量接入</button>
       <button class="tab" data-page="dash">📊 总览</button>
       <button class="tab" data-page="kb">📚 知识库</button>
-      <button class="tab" data-page="search">🔍 语义检索</button>
+      <button class="tab" data-page="search">🤖 AI Agent 工作台</button>
       <button class="tab" data-page="review">⚠️ 审核</button>
       <button class="tab" data-page="quality">📈 数据质量</button>
       <button class="tab" data-page="lifecycle">🔄 生命周期</button>
@@ -411,10 +481,20 @@ function hideModal(){ $("#modalOverlay").classList.remove("show"); }
 
 /* ===================== Flask API ===================== */
 const API_BASE = "/api";
+const AUTH_STATE = { principal:null, csrfToken:"", securityMode:"enterprise", allowedPlants:{} };
+
+function hasPermission(permission){
+  const permissions = new Set(AUTH_STATE.principal?.permissions || []);
+  return permissions.has("*") || permissions.has(permission);
+}
 
 async function apiRequest(path, options={}){
   const config = { credentials:"same-origin", ...options };
   const headers = new Headers(config.headers || {});
+  const method = String(config.method || "GET").toUpperCase();
+  if(!["GET","HEAD","OPTIONS"].includes(method) && AUTH_STATE.csrfToken && path !== "/auth/login"){
+    headers.set("X-CSRF-Token", AUTH_STATE.csrfToken);
+  }
   if(config.body && !(config.body instanceof FormData) && !headers.has("Content-Type")){
     headers.set("Content-Type", "application/json");
   }
@@ -431,9 +511,133 @@ async function apiRequest(path, options={}){
   }
   const payload = await response.json().catch(() => ({}));
   if(!response.ok){
-    throw new Error(payload.error || `Flask API 请求失败（HTTP ${response.status}）`);
+    const error = new Error(payload.error || `Flask API 请求失败（HTTP ${response.status}）`);
+    error.status = response.status;
+    error.code = payload.code || "";
+    error.payload = payload;
+    throw error;
   }
   return payload;
+}
+
+let loginPromise = null;
+
+function applyAuthenticatedIdentity(payload){
+  AUTH_STATE.principal = payload.principal || null;
+  AUTH_STATE.csrfToken = payload.csrf_token || AUTH_STATE.csrfToken || "";
+  AUTH_STATE.securityMode = payload.security_mode || AUTH_STATE.securityMode;
+  AUTH_STATE.allowedPlants = payload.allowed_plants || {};
+  const principal = AUTH_STATE.principal;
+  const button = document.getElementById("accountButton");
+  if(button) button.textContent = principal ? `👤 ${principal.display_name}` : "👤 未登录";
+  if(typeof STATE !== "undefined" && principal){
+    const roleMap = { GROUP_APPROVER:"审批人", PLANT_STEWARD:"数据管理员", GROUP_ADMIN:"数据管理员", AUDITOR:"审计员" };
+    STATE.currentRole = roleMap[principal.role] || principal.role_label || "申请人";
+  }
+  const plantSelect = document.getElementById("plantView");
+  if(plantSelect && principal){
+    const plants = Object.keys(AUTH_STATE.allowedPlants).length
+      ? AUTH_STATE.allowedPlants
+      : (principal.plant_code === "GROUP" ? {GROUP:"集团总部",SHANGHAI:"上海工厂",BEIJING:"北京工厂"} : {[principal.plant_code]:principal.plant_name});
+    plantSelect.innerHTML = Object.entries(plants).map(([code,name]) =>
+      `<option value="${esc(code)}">${esc(name)}视角</option>`
+    ).join("");
+    const selected = principal.plant_code === "GROUP" ? (STATE.viewPlant || "GROUP") : principal.plant_code;
+    STATE.viewPlant = Object.prototype.hasOwnProperty.call(plants, selected) ? selected : Object.keys(plants)[0];
+    STATE.distributionPlant = STATE.viewPlant;
+    plantSelect.value = STATE.viewPlant;
+  }
+  const tools = document.getElementById("dataTools");
+  if(tools) tools.style.display = hasPermission("data.purge") ? "flex" : "none";
+}
+
+function requestLogin(){
+  if(loginPromise) return loginPromise;
+  loginPromise = new Promise(resolve => {
+    showModal(`
+      <form id="enterpriseLogin" class="login-shell">
+        <div class="login-brand"><div class="logo-i">MA</div><div><h3>M-AI Master</h3><div style="color:var(--t3);font-size:11px">企业身份认证 · 首次部署凭据见 runtime/data/initial-credentials.txt</div></div></div>
+        <label><span class="form-label">账号</span><input class="input" id="loginUsername" autocomplete="username" required></label>
+        <label><span class="form-label">密码</span><input class="input" id="loginPassword" type="password" autocomplete="current-password" required></label>
+        <div class="login-error" id="loginError"></div>
+        <button class="btn btn-primary" type="submit" style="justify-content:center">🔐 登录</button>
+      </form>`, modal => {
+        const form = modal.querySelector("#enterpriseLogin");
+        form.addEventListener("submit", async event => {
+          event.preventDefault();
+          const submit = form.querySelector("button[type=submit]");
+          const errorBox = form.querySelector("#loginError");
+          submit.disabled = true;
+          errorBox.textContent = "";
+          try {
+            const payload = await apiRequest("/auth/login", { method:"POST", body:JSON.stringify({
+              username:form.querySelector("#loginUsername").value.trim(),
+              password:form.querySelector("#loginPassword").value
+            }) });
+            applyAuthenticatedIdentity(payload);
+            hideModal();
+            toast(`已以${payload.principal.display_name}身份登录`, "success");
+            resolve(payload);
+            loginPromise = null;
+          } catch(error){
+            errorBox.textContent = error.message;
+          } finally { submit.disabled = false; }
+        });
+        setTimeout(() => modal.querySelector("#loginUsername")?.focus(), 0);
+      });
+  });
+  return loginPromise;
+}
+
+async function ensureAuthenticated(){
+  try {
+    const payload = await apiRequest("/auth/me");
+    applyAuthenticatedIdentity(payload);
+    return payload;
+  } catch(error){
+    if(error.status === 401) return requestLogin();
+    throw error;
+  }
+}
+
+async function clearLocalEnterpriseCache(){
+  deactivateBatch();
+  if(typeof STORES !== "undefined"){
+    for(const store of STORES){ try { await dbClear(store); } catch(_error){} }
+  }
+  resetBatchState();
+}
+
+function showAccountPanel(){
+  const principal = AUTH_STATE.principal;
+  if(!principal){ requestLogin(); return; }
+  const canChangePassword = AUTH_STATE.securityMode === "enterprise";
+  showModal(`
+    <div class="modal-head"><h3>🛡 账户与安全</h3><button class="close">×</button></div>
+    <div class="agent-result" style="margin-top:0"><strong>${esc(principal.display_name)}</strong><div>${esc(principal.role_label)} · ${esc(principal.plant_name)}</div><code>${esc(principal.username)}</code></div>
+    ${canChangePassword ? `<form id="passwordForm" style="display:grid;gap:8px;margin-top:12px"><input class="input" id="currentPassword" type="password" autocomplete="current-password" placeholder="当前密码" required><input class="input" id="newPassword" type="password" autocomplete="new-password" placeholder="新密码（至少12位，包含字母、数字和符号）" required><div class="login-error" id="passwordError"></div><button class="btn btn-secondary" type="submit">🔑 修改密码</button></form>` : ""}
+    <button class="btn btn-danger" id="logoutButton" style="width:100%;justify-content:center;margin-top:12px">退出登录</button>
+  `, modal => {
+    modal.querySelector("#passwordForm")?.addEventListener("submit", async event => {
+      event.preventDefault();
+      const errorBox = modal.querySelector("#passwordError");
+      try {
+        const result = await apiRequest("/auth/change-password", { method:"POST", body:JSON.stringify({
+          current_password:modal.querySelector("#currentPassword").value,
+          new_password:modal.querySelector("#newPassword").value
+        }) });
+        AUTH_STATE.csrfToken = result.csrf_token || AUTH_STATE.csrfToken;
+        toast("密码已更新", "success"); hideModal();
+      } catch(error){ errorBox.textContent = error.message; }
+    });
+    modal.querySelector("#logoutButton").addEventListener("click", async () => {
+      try { await apiRequest("/auth/logout", {method:"POST", body:"{}"}); }
+      catch(error){ if(error.status !== 401) toast(error.message, "error"); }
+      AUTH_STATE.principal = null; AUTH_STATE.csrfToken = "";
+      await clearLocalEnterpriseCache(); hideModal();
+      await requestLogin(); await loadServerState(); render();
+    });
+  });
 }
 
 let backendReconnectTimer = null;
@@ -1296,11 +1500,13 @@ const STATE = {
   feedback: [],
   workflow: { steps:[], progress:0, closed_loop:false },
   workflowDefinition: [],
+  agentCapabilities: null,
   vectorIndex: { count:0, indexes:[] },
   vectorResults: [],
   standardResults: [],
   standardStats: null,
   graphData: { nodes:[], edges:[], stats:{} },
+  selectedGraphNodeId: "",
   auditChain: { blocks:[], verification:{ valid:true, block_count:0 } },
   agentPlan: null,
   ocrResult: null,
@@ -1309,7 +1515,22 @@ const STATE = {
   ocrProcessing: false,
   distributionInstruction: "",
   distributionPlan: null,
+  distributionResult: null,
   distributionBusy: false,
+  distributionSelectedTasks: [],
+  agentWorkspaceTab: "search",
+  agentPrompt: "",
+  agentIntent: "",
+  agentIntentConfidence: 0,
+  agentIntentReason: "",
+  agentBusy: false,
+  speechListening: false,
+  speechStatus: "",
+  graphView: "sankey",
+  complianceEvidenceStep: 0,
+  searchQuery: "",
+  searchResultHtml: "",
+  agentTask: "治理当前批次，完成跨工厂分发并收集反馈",
   canonicalMasters: [],
   mdmCounters: {},
   plantCollaboration: null,
@@ -1318,6 +1539,7 @@ const STATE = {
   feedbackPlant: "SHANGHAI",
   distributionMode: "FULL",
   distributionTargets: [],
+  ingestClassification: "INTERNAL",
   currentRole: "申请人",
   currentPage: "home",
   backendOnline: false
@@ -1358,6 +1580,7 @@ function resetBatchState(){
   STATE.vectorResults = [];
   STATE.standardResults = [];
   STATE.graphData = { nodes:[], edges:[], stats:{} };
+  STATE.selectedGraphNodeId = "";
   STATE.auditChain = { blocks:[], verification:{ valid:true, block_count:0 } };
   STATE.agentPlan = null;
   STATE.ocrResult = null;
@@ -1365,7 +1588,15 @@ function resetBatchState(){
   STATE.ocrProcessing = false;
   STATE.distributionInstruction = "";
   STATE.distributionPlan = null;
+  STATE.distributionResult = null;
   STATE.distributionBusy = false;
+  STATE.distributionSelectedTasks = [];
+  STATE.agentIntent = "";
+  STATE.agentIntentConfidence = 0;
+  STATE.agentIntentReason = "";
+  STATE.agentBusy = false;
+  STATE.speechListening = false;
+  STATE.speechStatus = "";
   STATE.canonicalMasters = [];
   STATE.plantCollaboration = null;
 }
@@ -1486,6 +1717,7 @@ async function cacheServerState(payload){
 async function syncServerState(payload, cache=true){
   const withTime = (row) => ({ ...row, created_at:serverTime(row.created_at) });
   STATE.currentBatch = payload.batch ? withTime(payload.batch) : null;
+  if(STATE.currentBatch?.data_classification) STATE.ingestClassification = STATE.currentBatch.data_classification;
   if(STATE.currentBatch) activateBatch(STATE.currentBatch.batch_id);
   else deactivateBatch();
   STATE.records = (payload.records || []).map(withTime);
@@ -1522,6 +1754,7 @@ async function loadServerState(){
   if(!STATE.workflowDefinition.length){
     try {
       const capabilities = await apiRequest("/agent/capabilities");
+      STATE.agentCapabilities = capabilities;
       STATE.workflowDefinition = Array.isArray(capabilities.workflow) ? capabilities.workflow : [];
     } catch(error){
       console.warn("workflow definition unavailable", error);
@@ -1617,6 +1850,142 @@ function updateEngineStatus(){
 }
 
 /* ===================== 渲染：操作平台首页 ===================== */
+function classificationMeta(code){
+  const key = String(code || "INTERNAL").toUpperCase();
+  return {
+    PUBLIC:{label:"公开",tone:"ok",external:"允许",detail:"可按策略使用外部 AI"},
+    INTERNAL:{label:"内部",tone:"ok",external:"允许",detail:"按组织策略调用外部 AI"},
+    CONFIDENTIAL:{label:"机密",tone:"warn",external:"阻断",detail:"仅本地模型与受控检索"},
+    RESTRICTED:{label:"受限",tone:"danger",external:"阻断",detail:"强制本地处理与最小权限"}
+  }[key] || {label:"内部",tone:"ok",external:"允许",detail:"按组织策略调用外部 AI"};
+}
+
+function complianceStepEvidence(ordinal){
+  const stepNo = Math.max(1, Math.min(8, Number(ordinal) || 1));
+  const batch = STATE.currentBatch || {};
+  const classification = String(batch.data_classification || STATE.ingestClassification || "INTERNAL").toUpperCase();
+  const meta = classificationMeta(classification);
+  const workflowStep = getWorkflowSteps().find(step => Number(step.ordinal) === stepNo) || {};
+  const proof = (STATE.graphData?.nodes || []).find(node => node.node_type === "WORKFLOW_STEP" && node.entity_id === workflowStep.step_code) || {};
+  const principal = AUTH_STATE.principal || {};
+  const audit = STATE.auditChain?.verification || STATE.graphData?.stats?.audit || {};
+  const successfulLogs = (STATE.distributionLogs || []).filter(item => item.status === "SUCCESS");
+  const sourceCount = new Set((STATE.records || []).map(item => item.system_source).filter(Boolean)).size;
+  const targets = [...new Set(successfulLogs.map(item => item.target_system).filter(Boolean))];
+  const plants = [...new Set(successfulLogs.map(item => item.plant_code).filter(Boolean))];
+  const retained = batch.legal_hold ? "法律保全中" : (batch.retention_until ? `保留至 ${fmtDate(batch.retention_until)}` : "按分级默认策略");
+  const common = {
+    ordinal:stepNo, name:workflowStep.name || `治理步骤 ${stepNo}`, status:workflowStep.status || "WAITING",
+    classification, classificationLabel:meta.label, external:meta.external,
+    batchId:batch.batch_id || "尚未建立批次", proofId:proof.id || "",
+    blockHash:String(proof.latest_block_hash || ""), payloadHash:String(proof.latest_payload_hash || ""),
+    actor:principal.display_name || "未登录", role:principal.role_label || principal.role || "未识别角色",
+  };
+  const rowsByStep = {
+    1:[
+      {label:"来源与责任",value:`${sourceCount || 0} 个来源 · ${batch.data_owner || common.actor}`,detail:`处理目的：${batch.processing_purpose || "物料主数据治理"}`},
+      {label:"数据边界",value:`${classification} · ${meta.label}`,detail:`当前范围：${PLANT_NAMES[STATE.viewPlant] || STATE.viewPlant || "集团总部"}`},
+    ],
+    2:[
+      {label:"AI 出域决策",value:meta.external === "阻断" ? "阻断外部模型" : "按策略允许",detail:meta.detail},
+      {label:"识别引擎",value:batch.semantic_model || STATE.agentCapabilities?.semantic?.model || "自动选择",detail:batch.semantic_method || "模型不可用时自动降级为本地规则"},
+    ],
+    3:[
+      {label:"向量处理",value:`${fmtNum(STATE.vectorIndex?.count || 0)} 条 · ${STATE.vectorIndex?.indexes?.[0]?.model || "待入库"}`,detail:meta.external === "阻断" ? "数据不出域，强制使用本地特征向量" : "仅发送治理所需的最小文本"},
+      {label:"知识访问边界",value:`${classification} · ${PLANT_NAMES[STATE.viewPlant] || STATE.viewPlant || "集团总部"}`,detail:"检索前执行数据分级和工厂范围过滤"},
+    ],
+    4:[
+      {label:"血缘完整性",value:`${fmtNum(STATE.graphData?.stats?.nodes || 0)} 节点 · ${fmtNum(STATE.graphData?.stats?.edges || 0)} 关系`,detail:"来源记录、问题、黄金编码和治理决策可关联追踪"},
+      {label:"步骤指纹",value:proof.latest_fingerprint_height ? `区块 #${proof.latest_fingerprint_height}` : "等待生成",detail:common.blockHash || "当前步骤尚无哈希证据",hash:common.blockHash},
+    ],
+    5:[
+      {label:"职责分离",value:`${common.actor} · ${common.role}`,detail:`待审核 ${fmtNum((STATE.reviews || []).filter(item => item.status === "REVIEW").length)} 组；审批权限由后端校验`},
+      {label:"操作范围",value:PLANT_NAMES[STATE.viewPlant] || STATE.viewPlant || "集团总部",detail:"请求中的 actor/reviewer 不作为授权依据，身份取自登录会话"},
+    ],
+    6:[
+      {label:"质量与生命周期",value:`质量评分 ${STATE.qualityReport?.overall?.score ?? "待评"}`,detail:retained},
+      {label:"删除控制",value:batch.legal_hold ? "删除已阻断" : "受保留策略控制",detail:batch.legal_hold ? "法律保全优先于到期清理" : "到期清理需授权、确认并留下审计事件"},
+    ],
+    7:[
+      {label:"接收边界",value:`${targets.join(" / ") || "待选择系统"} · ${plants.map(code => PLANT_NAMES[code] || code).join(" / ") || "待选择工厂"}`,detail:"目标系统和工厂必须在允许列表及登录账号范围内"},
+      {label:"最小分发字段",value:"编码、名称、品牌、型号、分类及必要规格",detail:"供应商联系人、合同价格等非必要字段不进入当前载荷"},
+    ],
+    8:[
+      {label:"反馈闭环",value:`${fmtNum((STATE.feedback || []).length)} 条工厂反馈`,detail:"反馈关联工厂、黄金编码、分发任务与下一轮治理索引"},
+      {label:"可信审计",value:audit.valid === false ? "审计链异常" : `审计链有效 · ${fmtNum(audit.block_count || 0)} 块`,detail:common.blockHash || audit.latest_hash || "等待审计证据",hash:common.blockHash || audit.latest_hash},
+    ],
+  };
+  let tone = "ok", control = "控制有效";
+  if(audit.valid === false){ tone = "danger"; control = "审计异常"; }
+  else if(stepNo === 5 && (STATE.reviews || []).some(item => item.status === "REVIEW")){ tone = "warn"; control = "待人工确认"; }
+  else if(stepNo === 7 && !hasPermission("distribution.execute")){ tone = "warn"; control = "仅可查看计划"; }
+  else if(!STATE.currentBatch){ tone = "muted"; control = "等待批次"; }
+  return {...common,tone,control,rows:rowsByStep[stepNo] || []};
+}
+
+function renderComplianceDrawer(){
+  const stepNo = Number(STATE.complianceEvidenceStep || 0);
+  if(!stepNo) return "";
+  const evidence = complianceStepEvidence(stepNo);
+  return `<div class="compliance-drawer-backdrop" onclick="closeComplianceEvidence()" aria-hidden="true"></div><aside class="compliance-drawer" role="dialog" aria-modal="true" aria-label="合规控制证据">
+    <div class="compliance-drawer-head"><div><h3>${evidence.ordinal}. ${esc(evidence.name)}</h3><p>展示实际策略状态和审计证据，不代表外部认证结论。</p></div><button class="btn btn-ghost" onclick="closeComplianceEvidence()" aria-label="关闭合规证据">×</button></div>
+    <div class="compliance-drawer-body">
+      <div class="compliance-evidence-card"><div class="label">策略判断</div><div class="value" style="color:var(--${evidence.tone === "danger" ? "d" : evidence.tone === "warn" ? "w" : evidence.tone === "muted" ? "t3" : "s"})">${esc(evidence.control)}</div><div class="detail">${esc(evidence.status)} · ${esc(evidence.classification)} / ${esc(evidence.classificationLabel)} · 外部 AI ${esc(evidence.external)}</div></div>
+      ${evidence.rows.map(row => `<div class="compliance-evidence-card"><div class="label">${esc(row.label)}</div><div class="value">${esc(row.value)}</div><div class="${row.hash ? "compliance-evidence-hash" : "detail"}">${esc(row.detail || row.hash || "-")}</div></div>`).join("")}
+      <div class="compliance-evidence-card"><div class="label">批次与执行身份</div><div class="value">${esc(evidence.actor)} · ${esc(evidence.role)}</div><div class="detail">批次：${esc(evidence.batchId)}</div>${evidence.payloadHash ? `<div class="compliance-evidence-hash">payload_hash: ${esc(evidence.payloadHash)}</div>` : ""}</div>
+      ${evidence.blockHash ? `<div class="compliance-evidence-card"><div class="label">步骤哈希指纹</div><div class="compliance-evidence-hash">block_hash: ${esc(evidence.blockHash)}</div></div>` : ""}
+      <button class="btn btn-primary" onclick="openComplianceRelation(${evidence.ordinal})" ${evidence.proofId ? "" : "disabled"}>在关系追踪图查看完整证据</button>
+    </div>
+  </aside>`;
+}
+
+window.openComplianceEvidence = function(ordinal){ STATE.complianceEvidenceStep = Number(ordinal) || 1; render(); };
+window.closeComplianceEvidence = function(){ STATE.complianceEvidenceStep = 0; render(); };
+window.openComplianceRelation = function(ordinal){
+  const evidence = complianceStepEvidence(ordinal);
+  STATE.complianceEvidenceStep = 0;
+  STATE.graphView = "relation";
+  if(evidence.proofId) STATE.selectedGraphNodeId = evidence.proofId;
+  STATE.currentPage = "dash";
+  render();
+};
+
+window.setIngestClassification = function(code){
+  const allowed = ["PUBLIC","INTERNAL","CONFIDENTIAL","RESTRICTED"];
+  STATE.ingestClassification = allowed.includes(String(code || "").toUpperCase()) ? String(code).toUpperCase() : "INTERNAL";
+  const meta = classificationMeta(STATE.ingestClassification);
+  const hint = $("#classificationPolicyHint");
+  if(hint) hint.textContent = `${meta.label}数据：${meta.detail}。该标记会随批次保存，用于控制外部 AI 调用并为治理报告标注分级。`;
+};
+
+function renderComplianceStrip(hasData){
+  const meta = classificationMeta(STATE.currentBatch?.data_classification || STATE.ingestClassification);
+  const classification = String(STATE.currentBatch?.data_classification || STATE.ingestClassification || "INTERNAL").toUpperCase();
+  const audit = STATE.auditChain?.verification || {};
+  const auditValue = !hasData ? "待接入" : audit.valid === false ? "校验异常" : Number(audit.block_count || 0) ? `有效 · ${audit.block_count}块` : "已启用";
+  const auditTone = !hasData ? "muted" : audit.valid === false ? "danger" : "ok";
+  const sourceValue = hasData ? `${new Set(STATE.records.map(row => row.system_source).filter(Boolean)).size || 1} 个来源` : "待接入";
+  const classificationValue = hasData ? `${classification} · ${meta.label}` : "待声明";
+  const classificationTone = hasData ? meta.tone : "muted";
+  const externalValue = hasData ? meta.external : "待接入";
+  const externalTone = hasData ? (meta.external === "阻断" ? "warn" : "ok") : "muted";
+  const principal = AUTH_STATE.principal || {};
+  const scopeValue = principal.display_name ? `${principal.display_name} · ${PLANT_NAMES?.[STATE.viewPlant] || STATE.viewPlant || "集团总部"}` : (PLANT_NAMES?.[STATE.viewPlant] || STATE.viewPlant || "集团总部");
+  const retentionValue = !hasData ? "待接入" : STATE.currentBatch?.legal_hold ? "法律保全" : STATE.currentBatch?.retention_until ? `至 ${fmtDate(STATE.currentBatch.retention_until)}` : "按分级策略";
+  const retentionTone = !hasData ? "muted" : STATE.currentBatch?.legal_hold ? "warn" : "ok";
+  const owner = STATE.currentBatch?.data_owner || principal.display_name || "待指定责任人";
+  const purpose = STATE.currentBatch?.processing_purpose || "物料主数据治理";
+  return `<div class="compliance-strip" aria-label="数据合规摘要">
+    <div class="compliance-intro"><strong><span style="color:var(--a)">◈</span>可信控制状态</strong><span>${hasData ? `${esc(owner)} · ${esc(purpose)}` : "接入时声明责任人、处理目的与数据等级"}；不等同于认证结论</span></div>
+    <div class="compliance-cell"><span class="compliance-label">数据分级</span><span class="compliance-value ${classificationTone}">${classificationValue}</span></div>
+    <div class="compliance-cell"><span class="compliance-label">AI 出域策略</span><span class="compliance-value ${externalTone}">${externalValue}</span></div>
+    <div class="compliance-cell"><span class="compliance-label">来源追溯</span><span class="compliance-value ${hasData ? "ok" : "muted"}">${sourceValue}</span></div>
+    <div class="compliance-cell"><span class="compliance-label">哈希审计链</span><span class="compliance-value ${auditTone}">${auditValue}</span></div>
+    <div class="compliance-cell"><span class="compliance-label">身份与范围</span><span class="compliance-value ok">${esc(scopeValue)}</span></div>
+    <div class="compliance-cell"><span class="compliance-label">保留与保全</span><span class="compliance-value ${retentionTone}">${esc(retentionValue)}</span></div>
+  </div>`;
+}
+
 function renderHome(){
   const records = STATE.records || [];
   const masters = STATE.masters || [];
@@ -1634,7 +2003,7 @@ function renderHome(){
     { page:"ingest", icon:"📥", title:"批量接入", desc:"上传多源 CSV，自动字段映射与属性抽取。", color:"m-green", bg:"rgba(16,185,129,.15)", fg:"#34d399", stat: hasData ? `${fmtNum(records.length)} 条` : "待上传" },
     { page:"dash", icon:"📊", title:"治理总览", desc:"KPI、主数据明细、决策分布与亮点。", color:"m-blue", bg:"rgba(59,130,246,.15)", fg:"#60a5fa", stat: hasData ? `${fmtNum(masters.length)} 种` : "暂无" },
     { page:"kb", icon:"📚", title:"知识库", desc:"分类树、同义词、品牌库与决策规则。", color:"m-violet", bg:"rgba(139,92,246,.15)", fg:"#a78bfa", stat: `${Object.keys(SYNONYMS).length} 规则` },
-    { page:"search", icon:"🔍", title:"语义检索", desc:"自然语言解析品牌/DN/材质条件。", color:"m-cyan", bg:"rgba(6,182,212,.15)", fg:"#22d3ee", stat: `${STATE.searchHistory.length || 0} 次` },
+    { page:"search", icon:"AI", title:"Agent 工作台", desc:"智能检索、跨系统分发与治理任务编排。", color:"m-cyan", bg:"rgba(6,182,212,.15)", fg:"#22d3ee", stat:"3 个 Agent" },
     { page:"review", icon:"⚠️", title:"人工审核", desc:"处理冲突项，确认合并或新建。", color:"m-amber", bg:"rgba(245,158,11,.15)", fg:"#fbbf24", stat: hasData ? `${fmtNum(reviews.length)} 待审` : "无" },
     { page:"quality", icon:"📈", title:"数据质量", desc:"五维评估：完整/准确/一致/唯一/标准。", color:"m-rose", bg:"rgba(239,68,68,.15)", fg:"#f87171", stat: qScore != null ? `${qScore}%` : "待评" },
     { page:"lifecycle", icon:"🔄", title:"生命周期", desc:"申请、初审、审批、变更与归档。", color:"m-cyan", bg:"rgba(6,182,212,.12)", fg:"#67e8f9", stat: `${STATE.lifecycle.length || 0} 流程` },
@@ -1670,6 +2039,8 @@ function renderHome(){
         </div>
       </div>
 
+      ${renderComplianceStrip(hasData)}
+
       ${hasData ? `<div class="card" style="padding:14px 16px">
         <div class="card-head" style="margin-bottom:12px">
           <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">🧭</span>端到端治理闭环</div>
@@ -1684,19 +2055,6 @@ function renderHome(){
           `).join("")}
         </div>
       </div>` : ""}
-
-      <div class="card" style="padding:14px 16px">
-        <div class="card-head">
-          <div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:#93c5fd">AI</span>大模型治理 Agent</div>
-          <span class="tag ${STATE.agentPlan?.runtime?.active ? "tag-ok" : "tag-muted"}">${STATE.agentPlan?.runtime?.active ? "通义千问在线" : "本地可解释编排"}</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input class="input" id="agentTask" value="治理当前批次，完成跨工厂分发并收集反馈" style="flex:1" aria-label="治理任务">
-          <button class="btn btn-primary" onclick="runAgentPlan()">执行编排</button>
-          <button class="btn btn-success" onclick="runCompetitionDemo()">一键闭环演示</button>
-        </div>
-        ${STATE.agentPlan ? `<div class="agent-result"><strong style="color:var(--t)">${esc(STATE.agentPlan.plan?.summary || "编排完成")}</strong><br>${(STATE.agentPlan.plan?.steps || []).map(item => `${item.step}. ${esc(item.name || item.code || "")}`).join(" → ")}<br><span style="color:var(--t3)">${esc(STATE.agentPlan.runtime?.warning || STATE.agentPlan.runtime?.method || "")}</span></div>` : ""}
-      </div>
 
       <div class="card-title" style="margin:4px 2px 12px"><span class="icon" style="background:rgba(26,86,219,.12);color:var(--pl)">🧩</span>功能模块入口</div>
       <div class="module-grid">
@@ -1758,6 +2116,8 @@ function renderDash(){
           <div class="kpi k-rose"><div class="kpi-emoji">📉</div><div class="kpi-label">数据压缩率</div><div class="kpi-value">${compression.toFixed(1)}%</div><div class="kpi-sub">${records.length} → ${masters.length}</div></div>
         </div>
       </div>
+
+      ${renderGovernanceVisualCenter()}
 
       <!-- ⑤ 治理结果明细 -->
       <div class="card">
@@ -2007,7 +2367,7 @@ window.showAIExplanation = async function(mdmCode){
 function renderGovernanceGraph(graphData){
   const nodes = graphData?.nodes || [], edges = graphData?.edges || [];
   if(!nodes.length) return emptyState("◌","暂无治理图谱","上传并治理数据后自动生成血缘关系");
-  const width = 720, height = 340, pad = 22;
+  const width = 1040, height = 520, pad = 34;
   const positions = new Map(nodes.map(node => [node.id, {
     x:pad + ((Number(node.x) + 1) / 2) * (width - pad * 2),
     y:pad + ((Number(node.y) + 1) / 2) * (height - pad * 2)
@@ -2017,18 +2377,194 @@ function renderGovernanceGraph(graphData){
     BATCH:"#14b8a6", WORKFLOW_STEP:"#2563eb", ISSUE:"#ef4444", REVIEW:"#f59e0b",
     TARGET_SYSTEM:"#22c55e", FEEDBACK:"#10b981", AUDIT:"#f97316", ENTITY:"#94a3b8"
   };
+  const edgeColors = {PREVIOUS_HASH:"#f97316",FINGERPRINTS:"#fb923c",NEXT_STEP:"#3b82f6",MAPPED_TO:"#06b6d4",DISTRIBUTED_TO:"#10b981",DELIVERED_TO:"#10b981",HAS_QUALITY_ISSUE:"#ef4444"};
   const lines = edges.map(edge => {
     const a = positions.get(edge.source), b = positions.get(edge.target);
-    return a && b ? `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--bd)" stroke-width="1" opacity=".7"><title>${esc(edge.relation || "关系")}</title></line>` : "";
+    const relation = edge.relation || "RELATED_TO";
+    const color = edgeColors[relation] || "var(--bd)";
+    const dashed = relation === "FINGERPRINTS" ? ' stroke-dasharray="4 3"' : "";
+    return a && b ? `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${color}" stroke-width="${edgeColors[relation] ? 1.5 : 1}" opacity="${edgeColors[relation] ? .78 : .55}"${dashed}><title>${esc(relation)}</title></line>` : "";
   }).join("");
-  const labelNodes = [...nodes].sort((a,b) => Number(b.centrality || 0) - Number(a.centrality || 0)).slice(0, 14);
+  const labelNodes = [...nodes].sort((a,b) => Number(b.centrality || 0) - Number(a.centrality || 0)).slice(0, 22);
   const labelIds = new Set(labelNodes.map(node => node.id));
   const circles = nodes.map(node => {
-    const point = positions.get(node.id), radius = node.node_type === "MASTER" ? 5.8 : (node.node_type === "RAW" ? 3 : (node.node_type === "AUDIT" ? 4 : 4.5));
+    const point = positions.get(node.id), radius = node.node_type === "MASTER" ? 7 : (node.node_type === "RAW" ? 3.8 : (node.node_type === "AUDIT" ? 5.5 : (node.node_type === "WORKFLOW_STEP" ? 6 : 4.8)));
     const label = String(node.label || node.entity_id || node.id);
-    return `<g data-node="${encodeURIComponent(node.id)}" style="cursor:pointer"><circle cx="${point.x}" cy="${point.y}" r="${radius}" fill="${colors[node.node_type] || '#94a3b8'}" stroke="var(--bg2)" stroke-width="1.5"><title>${esc(node.node_type)} · ${esc(label)} · 点击查看关系</title></circle>${labelIds.has(node.id) ? `<text x="${point.x + 7}" y="${point.y - 6}" fill="var(--t2)" font-size="9" pointer-events="none">${esc(label.slice(0,12))}</text>` : ""}</g>`;
+    const selected = node.id === STATE.selectedGraphNodeId;
+    return `<g data-node="${encodeURIComponent(node.id)}" style="cursor:pointer"><circle cx="${point.x}" cy="${point.y}" r="${radius}" fill="${colors[node.node_type] || '#94a3b8'}" stroke="${selected ? '#fbbf24' : 'var(--bg2)'}" stroke-width="${selected ? 3 : 1.5}"><title>${esc(node.node_type)} · ${esc(label)} · 点击查看证据</title></circle>${labelIds.has(node.id) ? `<text x="${point.x + 9}" y="${point.y - 7}" fill="var(--t2)" font-size="10" pointer-events="none">${esc(label.slice(0,16))}</text>` : ""}</g>`;
   }).join("");
   return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="主数据关系血缘与哈希审计链图谱">${lines}${circles}</svg>`;
+}
+
+const GRAPH_TYPE_META = {
+  BATCH:"治理批次",SYSTEM:"来源系统",RAW:"原始记录",ISSUE:"质量问题",MASTER:"黄金主数据",
+  CATEGORY:"标准分类",WORKFLOW_STEP:"治理步骤",REVIEW:"人工审核",TARGET_SYSTEM:"目标系统",
+  PLANT:"工厂主体",FEEDBACK:"工厂反馈",AUDIT:"哈希存证",ENTITY:"业务实体"
+};
+const GRAPH_RELATION_LABELS = {
+  PROVIDES_RECORD:"提供记录",INGESTED_RECORD:"批次接入",HAS_QUALITY_ISSUE:"存在质量问题",MAPPED_TO:"归并映射",
+  CLASSIFIED_AS:"标准分类",CONTAINS_STEP:"包含步骤",NEXT_STEP:"流程后继",REQUIRES_REVIEW:"提交审核",
+  DISTRIBUTED_TO:"分发至系统",DELIVERED_TO:"送达工厂",VALIDATED_BY:"现场验证",SUBMITTED_BY:"反馈主体",
+  FINGERPRINTS:"哈希指纹",PREVIOUS_HASH:"前序哈希",AVAILABLE_TO:"可用范围",OWNED_BY:"数据归属"
+};
+
+function graphRelations(nodeId){
+  const graph = STATE.graphData || {nodes:[],edges:[]};
+  return (graph.edges || []).filter(edge => edge.source === nodeId || edge.target === nodeId).map(edge => {
+    const neighborId = edge.source === nodeId ? edge.target : edge.source;
+    const neighbor = (graph.nodes || []).find(item => item.id === neighborId) || {id:neighborId,label:neighborId,node_type:"ENTITY"};
+    return {relation:edge.relation || "RELATED_TO",neighbor};
+  });
+}
+
+function renderGraphNodeDetail(nodeId){
+  const graph = STATE.graphData || {nodes:[],edges:[]};
+  const node = (graph.nodes || []).find(item => item.id === nodeId);
+  if(!node) return emptyState("◎","选择图谱节点","点击画布中的节点查看来源、关系与哈希证据");
+  const relations = graphRelations(node.id);
+  const encodedId = encodeURIComponent(node.id).replace(/'/g,"%27");
+  let evidence = "";
+  if(node.node_type === "RAW") evidence = `<div class="graph-evidence"><div class="graph-evidence-label">源记录定位</div><strong>${esc(node.source_system || "CSV")} / ${esc(node.source_table || "-")}</strong><div style="font-size:10px;color:var(--t3);margin-top:3px">业务主键：${esc(node.entity_id || node.material_code || "-")}</div><div class="graph-hash" style="margin-top:6px">${esc(node.record_hash || "尚未生成记录指纹")}</div>${Number(node.record_id) ? `<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="showSourceRecord(${Number(node.record_id)})">查看源系统证据</button>` : ""}</div>`;
+  if(node.node_type === "MASTER") evidence = `<div class="graph-evidence"><div class="graph-evidence-label">黄金主数据决策</div><strong>${esc(node.entity_id || "-")}</strong><div style="font-size:10px;color:var(--t3);margin-top:3px">决策：${esc(node.decision || "-")}</div><button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="showLineage('${esc(node.entity_id || "")}')">追溯完整血缘</button></div>`;
+  if(node.node_type === "WORKFLOW_STEP") evidence = `<div class="graph-evidence"><div class="graph-evidence-label">步骤状态与指纹</div><strong>${esc(node.status || "WAITING")} · ${Number(node.progress || 0)}%</strong><div style="font-size:10px;color:var(--t3);margin-top:3px">累计指纹 ${Number(node.fingerprint_count || 0)} 个 · 最新区块 #${Number(node.latest_fingerprint_height || 0)}</div><div class="graph-hash" style="margin-top:6px">${esc(node.latest_block_hash || "等待生成步骤指纹")}</div></div>`;
+  if(node.node_type === "AUDIT") evidence = `<div class="graph-evidence"><div class="graph-evidence-label">链式存证</div><strong style="color:${node.verified ? "var(--s)" : "var(--d)"}">${node.verified ? "校验通过" : "校验异常"}</strong><div class="graph-hash" style="margin-top:6px">当前：${esc(node.block_hash || "-")}<br>前序：${esc(node.previous_hash || "-")}</div></div>`;
+  if(node.node_type === "ISSUE") evidence = `<div class="graph-evidence"><div class="graph-evidence-label">质量问题</div><strong style="color:var(--d)">${esc(node.severity || "MEDIUM")}</strong><div style="font-size:10px;color:var(--t3);margin-top:3px">字段：${esc(node.field || "-")}</div></div>`;
+  return `<div class="graph-detail-kicker">节点证据面板</div><div class="graph-detail-title">${esc(node.label || node.entity_id || node.id)}</div><div class="graph-detail-meta">${esc(GRAPH_TYPE_META[node.node_type] || node.node_type || "业务节点")} · ${relations.length} 条直接关系</div>
+    ${evidence}
+    <div class="graph-evidence"><div class="graph-evidence-label">直接关系</div><div class="graph-relation-list">${relations.slice(0,10).map(item => { const targetId=encodeURIComponent(item.neighbor.id).replace(/'/g,"%27"); return `<button class="graph-relation" onclick="selectGraphNode(decodeURIComponent('${targetId}'))"><span>${esc(GRAPH_RELATION_LABELS[item.relation] || item.relation)}</span><strong>${esc(item.neighbor.label || item.neighbor.entity_id || item.neighbor.id)}</strong></button>`; }).join("") || `<span style="font-size:10px;color:var(--t3)">无直接关系</span>`}</div></div>
+    <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center" onclick="inspectGraphNode(decodeURIComponent('${encodedId}'))">查看完整节点证据</button>`;
+}
+
+function renderSankeyView(){
+  const records = STATE.records || [];
+  const masters = STATE.masters || [];
+  const reviews = STATE.reviews || [];
+  const logs = STATE.distributionLogs || [];
+  const feedback = STATE.feedback || [];
+  const sourceCounts = {};
+  records.forEach(row => { const source = row.system_source || "CSV"; sourceCounts[source] = (sourceCounts[source] || 0) + 1; });
+  const plantCounts = {};
+  logs.filter(row => row.status === "SUCCESS").forEach(row => { const plant = row.plant_code || "GROUP"; plantCounts[plant] = (plantCounts[plant] || 0) + 1; });
+  const feedbackPlantCounts = {};
+  feedback.forEach(row => { const plant = row.plant_code || "GROUP"; feedbackPlantCounts[plant] = (feedbackPlantCounts[plant] || 0) + 1; });
+  const workflow = getWorkflowSteps();
+  const groupView = (STATE.viewPlant || "GROUP") === "GROUP";
+  const metricsFor = ordinal => workflow.find(item => Number(item.ordinal) === ordinal)?.metrics || {};
+  const proofFor = ordinal => {
+    const step = workflow.find(item => Number(item.ordinal) === ordinal) || {};
+    const proof = (STATE.graphData?.nodes || []).find(node => node.node_type === "WORKFLOW_STEP" && node.entity_id === step.step_code);
+    return {step, proof, hash:String(proof?.latest_block_hash || "")};
+  };
+  const pendingReviews = reviews.filter(row => row.status === "REVIEW").length;
+  const approvedCount = Math.max(0, masters.length - pendingReviews);
+  const deliveredCount = logs.filter(row => row.status === "SUCCESS").length;
+  const ingestCount = groupView ? Number(metricsFor(1).records ?? records.length) : records.length;
+  const vectorCount = groupView ? Number(metricsFor(3).indexed ?? STATE.vectorIndex?.count ?? masters.length) : masters.length;
+  const dedupeCount = groupView ? Number(metricsFor(4).golden_masters ?? masters.length) : masters.length;
+  const distributionCount = groupView ? Number(metricsFor(7).success_count ?? deliveredCount) : deliveredCount;
+  const feedbackCount = groupView ? Number(metricsFor(8).feedback_count ?? feedback.length) : feedback.length;
+  const values = [ingestCount, records.length || ingestCount, vectorCount, dedupeCount, masters.length, masters.length, distributionCount, feedbackCount];
+  const stageNames = ["多源数据接入", "大模型标准识别", "Embedding向量入库", "图谱辅助查重", "多主体人工审核", "质量评估与生命周期", "跨工厂智能分发", "工厂反馈与知识回流"];
+  const stageLines = [["多源数据","接入"],["大模型标准","识别"],["Embedding","向量入库"],["图谱辅助","查重"],["多主体","人工审核"],["质量评估与","生命周期"],["跨工厂","智能分发"],["工厂反馈与","知识回流"]];
+  const stageColors = ["#06b6d4", "#3b82f6", "#8b5cf6", "#14b8a6", "#f59e0b", "#10b981", "#2563eb", "#22c55e"];
+  const compactEntries = (counts, limit, otherLabel) => {
+    const entries = Object.entries(counts).sort((a,b) => Number(b[1]) - Number(a[1]));
+    if(entries.length <= limit) return entries;
+    const visible = entries.slice(0, limit - 1);
+    visible.push([otherLabel, entries.slice(limit - 1).reduce((sum, item) => sum + Number(item[1] || 0), 0)]);
+    return visible;
+  };
+  const sourceEntries = compactEntries(sourceCounts, 4, "其他来源");
+  const plantEntries = compactEntries(plantCounts, 3, "其他工厂");
+  const maxValue = Math.max(1, ...values, ...sourceEntries.map(item => Number(item[1])), ...plantEntries.map(item => Number(item[1])));
+  const nodes = [];
+  const links = [];
+  const stageX = [275, 405, 535, 665, 795, 925, 1055, 1325];
+  const sourceStartY = 250 - Math.max(0, sourceEntries.length - 1) * 26;
+  sourceEntries.forEach(([name, value], index) => {
+    const graphNode = (STATE.graphData?.nodes || []).find(node => node.node_type === "SYSTEM" && String(node.entity_id || node.label) === name);
+    nodes.push({id:`source-${index}`, kind:"source", label:name, value, x:164, y:sourceStartY + index * 52, color:"#64748b", graphNodeId:graphNode?.id || "", complianceStep:1, title:`来源系统 ${name} · ${value} 条`});
+  });
+  stageNames.forEach((label, index) => {
+    const evidence = proofFor(index + 1);
+    const compliance = complianceStepEvidence(index + 1);
+    const rawStatus = String(evidence.step.status || "WAITING").toUpperCase();
+    const status = ({DONE:"已完成",COMPLETED:"已完成",ACTIVE:"处理中",RUNNING:"处理中",REVIEW:"待审核",READY:"待执行",WAITING:"等待"})[rawStatus] || evidence.step.status || "等待";
+    nodes.push({id:`stage-${index}`, kind:"stage", label, lines:stageLines[index], value:values[index], x:stageX[index], y:255, color:stageColors[index], graphNodeId:evidence.proof?.id || "", complianceStep:index + 1, status, control:compliance.control, tone:compliance.tone, hash:evidence.hash, title:`${index + 1}. ${label} · ${values[index]} 条/任务 · ${status} · ${compliance.control} · ${evidence.hash ? `哈希 ${evidence.hash}` : "等待指纹"}`});
+  });
+  plantEntries.forEach(([plant, value], index) => {
+    const graphNode = (STATE.graphData?.nodes || []).find(node => node.node_type === "PLANT" && String(node.entity_id || "") === plant);
+    nodes.push({id:`plant-${index}`, kind:"plant", plantCode:plant, label:PLANT_NAMES[plant] || plant, value, x:1172, y:350 + index * 54, color:"#10b981", graphNodeId:graphNode?.id || "", complianceStep:7, title:`${PLANT_NAMES[plant] || plant} · ${value} 个成功分发任务`});
+  });
+  if(pendingReviews) nodes.push({id:"pending-review", kind:"branch", label:"待审核", value:pendingReviews, x:790, y:425, color:"#f59e0b", title:`待审核 ${pendingReviews} 组，需人工确认`});
+  if(records.length > masters.length) nodes.push({id:"merged-away", kind:"branch", label:"重复记录归并", value:records.length - masters.length, x:620, y:385, color:"#8b5cf6", title:`${records.length - masters.length} 条记录被归并到黄金主数据`});
+  if(!deliveredCount && approvedCount) nodes.push({id:"await-distribution", kind:"branch", label:"待分发", value:approvedCount, x:1040, y:430, color:"#64748b", title:`${approvedCount} 条已批准主数据等待分发`});
+  const sourceNodes = nodes.filter(node => node.id.startsWith("source-"));
+  sourceNodes.forEach(node => links.push({source:node.id,target:"stage-0",value:node.value,color:"#64748b"}));
+  for(let index=0; index<6; index++) links.push({source:`stage-${index}`,target:`stage-${index+1}`,value:Math.min(values[index], values[index+1]),color:stageColors[index]});
+  if(records.length > masters.length) links.push({source:"stage-2",target:"merged-away",value:records.length - masters.length,color:"#8b5cf6"});
+  if(pendingReviews) links.push({source:"stage-4",target:"pending-review",value:pendingReviews,color:"#f59e0b"});
+  if(!deliveredCount && approvedCount) links.push({source:"stage-5",target:"await-distribution",value:approvedCount,color:"#64748b"});
+  const plantNodes = nodes.filter(node => node.id.startsWith("plant-"));
+  plantNodes.forEach(node => {
+    links.push({source:"stage-6",target:node.id,value:node.value,color:"#10b981"});
+    const returned = Number(feedbackPlantCounts[node.plantCode] || 0);
+    if(returned) links.push({source:node.id,target:"stage-7",value:returned,color:"#22c55e"});
+  });
+  if(!plantNodes.length && feedbackCount) links.push({source:"stage-6",target:"stage-7",value:Math.min(distributionCount, feedbackCount),color:"#22c55e"});
+  const width = 1420, height = 540, nodeWidth = 14;
+  const svgNodes = nodes.map(node => {
+    const heightLimit = node.kind === "stage" ? 104 : node.kind === "branch" ? 62 : 54;
+    const h = Math.max(node.kind === "stage" ? 18 : 14, Math.min(heightLimit, Number(node.value || 0) / maxValue * heightLimit));
+    const y = node.y - h / 2;
+    return {...node, cy:node.y, y, h};
+  });
+  const nodeMap = new Map(svgNodes.map(node => [node.id, node]));
+  const svgLinks = links.map(link => {
+    const source = nodeMap.get(link.source), target = nodeMap.get(link.target);
+    if(!source || !target || !link.value) return "";
+    const sx = source.x + nodeWidth, tx = target.x, sy = source.cy, ty = target.cy;
+    const curve = Math.max(18, (tx - sx) * .42);
+    const stroke = Math.max(2, Math.min(38, Number(link.value) / maxValue * 38));
+    const path = `M${sx} ${sy} C${sx + curve} ${sy},${tx - curve} ${ty},${tx} ${ty}`;
+    const currentStroke = Math.max(1.5, Math.min(5, stroke * .18));
+    return `<path class="sankey-link" d="${path}" stroke="${link.color}" stroke-width="${stroke}"><title>${esc(source.label)} → ${esc(target.label)} · ${fmtNum(link.value)} 条/任务</title></path><path class="sankey-link-current" d="${path}" stroke="${link.color}" stroke-width="${currentStroke}"/>`;
+  }).join("");
+  const toneColor = tone => ({danger:"#ef4444",warn:"#f59e0b",muted:"#64748b"})[tone] || "#10b981";
+  const nodeAction = node => node.complianceStep ? `role="button" tabindex="0" onclick="openComplianceEvidence(${Number(node.complianceStep)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openComplianceEvidence(${Number(node.complianceStep)})}"` : "";
+  const svgNodeMarkup = svgNodes.map(node => {
+    if(node.kind === "stage"){
+      const cardX = node.x - 59, cardY = 50, controlColor = toneColor(node.tone);
+      const activeClass = (node.status === "处理中" || node.status === "待审核") ? " sankey-active" : "";
+      return `<g class="sankey-node${activeClass}" ${nodeAction(node)}><line x1="${node.x + 7}" y1="130" x2="${node.x + 7}" y2="${Math.max(136,node.y - 8)}" stroke="${node.color}" stroke-opacity=".28" stroke-dasharray="3 4"/><rect class="sankey-stage-card" x="${cardX}" y="${cardY}" width="118" height="80" rx="8" stroke="${node.color}" stroke-opacity=".48"><title>${esc(node.title)}</title></rect><rect x="${cardX}" y="${cardY}" width="4" height="80" rx="2" fill="${node.color}"/><circle cx="${cardX + 16}" cy="${cardY + 17}" r="9" fill="${node.color}" fill-opacity=".14"/><text x="${cardX + 16}" y="${cardY + 20.5}" text-anchor="middle" font-size="9" font-weight="800" fill="${node.color}">${Number(node.complianceStep)}</text><text x="${cardX + 31}" y="${cardY + 16}" class="sankey-stage-title"><tspan x="${cardX + 31}" dy="0">${esc(node.lines[0])}</tspan><tspan x="${cardX + 31}" dy="13">${esc(node.lines[1])}</tspan></text><text x="${cardX + 12}" y="${cardY + 54}" class="sankey-stage-meta">${fmtNum(node.value)} 条 · ${esc(node.status)}</text><circle cx="${cardX + 14}" cy="${cardY + 68}" r="3" fill="${controlColor}"/><text x="${cardX + 22}" y="${cardY + 71}" class="sankey-stage-meta" fill="${controlColor}">${esc(node.control)}</text><rect class="sankey-flow-bar" x="${node.x}" y="${node.y}" width="${nodeWidth}" height="${node.h}" rx="4" fill="${node.color}"><title>${esc(node.title)}</title></rect></g>`;
+    }
+    if(node.kind === "source"){
+      return `<g class="sankey-node" ${nodeAction(node)}><rect class="sankey-stage-card" x="20" y="${node.cy - 21}" width="132" height="42" rx="7" stroke="${node.color}" stroke-opacity=".3"><title>${esc(node.title)}</title></rect><circle cx="36" cy="${node.cy}" r="5" fill="${node.color}"/><text x="49" y="${node.cy - 2}" class="sankey-node-label">${esc(node.label.slice(0,15))}</text><text x="49" y="${node.cy + 12}" class="sankey-value-label">${fmtNum(node.value)} 条原始记录</text><rect class="sankey-flow-bar" x="${node.x}" y="${node.y}" width="${nodeWidth}" height="${node.h}" rx="4" fill="${node.color}"/></g>`;
+    }
+    if(node.kind === "plant"){
+      return `<g class="sankey-node" ${nodeAction(node)}><rect class="sankey-stage-card" x="1014" y="${node.cy - 21}" width="140" height="42" rx="7" stroke="${node.color}" stroke-opacity=".35"><title>${esc(node.title)}</title></rect><circle cx="1030" cy="${node.cy}" r="5" fill="${node.color}"/><text x="1043" y="${node.cy - 2}" class="sankey-node-label">${esc(node.label.slice(0,15))}</text><text x="1043" y="${node.cy + 12}" class="sankey-value-label">接收 ${fmtNum(node.value)} 个任务</text><rect class="sankey-flow-bar" x="${node.x}" y="${node.y}" width="${nodeWidth}" height="${node.h}" rx="4" fill="${node.color}"/></g>`;
+    }
+    return `<g><rect class="sankey-flow-bar" x="${node.x}" y="${node.y}" width="${nodeWidth}" height="${node.h}" rx="4" fill="${node.color}"><title>${esc(node.title)}</title></rect><text x="${node.x + 22}" y="${node.cy - 3}" class="sankey-node-label">${esc(node.label)}</text><text x="${node.x + 22}" y="${node.cy + 11}" class="sankey-value-label">${fmtNum(node.value)} 条</text></g>`;
+  }).join("");
+  const background = `<rect class="sankey-section" x="12" y="18" width="178" height="504" rx="12" opacity=".56"/><rect class="sankey-section" x="200" y="18" width="1208" height="504" rx="12" opacity=".56"/><text x="28" y="40" class="sankey-section-title">来源系统 · SOURCE</text><text x="216" y="40" class="sankey-section-title">八步治理与跨工厂闭环 · GOVERNANCE FLOW</text><line x1="210" y1="255" x2="1385" y2="255" stroke="var(--bd)" stroke-width="1" stroke-dasharray="3 7" opacity=".65"/>`;
+  return `<div class="sankey-shell"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="主数据治理桑基数据流图谱">${background}${svgLinks}${svgNodeMarkup}</svg></div><div class="sankey-legend" style="margin-top:9px"><span><i style="display:inline-block;width:18px;height:5px;border-radius:4px;background:#06b6d4;margin-right:5px"></i>河道宽度代表数据量</span><span style="color:#8b5cf6">● 重复记录归并</span><span style="color:#f59e0b">● 待人工审核</span><span style="color:#10b981">● 工厂接收与反馈</span><span style="margin-left:auto;color:var(--pl)">点击步骤卡查看控制与哈希证据</span></div>`;
+}
+
+function renderGovernanceVisualCenter(){
+  const graph = STATE.graphData || {nodes:[],edges:[],stats:{}};
+  const nodes = graph.nodes || [], stats = graph.stats || {};
+  const workflow = getWorkflowSteps();
+  if(nodes.length && !nodes.some(node => node.id === STATE.selectedGraphNodeId)){
+    STATE.selectedGraphNodeId = (nodes.find(node => node.node_type === "MASTER") || nodes.find(node => node.node_type === "WORKFLOW_STEP") || nodes[0]).id;
+  }
+  const audit = stats.audit || STATE.auditChain?.verification || {};
+  return `<section class="governance-center" aria-label="治理血缘与可信审计中心">
+    <div class="governance-center-head"><div><div class="governance-center-title"><span class="icon">G</span>治理血缘与可信审计中心</div><div class="governance-center-sub">从来源系统定位问题记录，观察治理决策、黄金主数据、跨系统分发与工厂反馈；八步状态均关联可验证哈希指纹。</div></div><div class="card-actions"><span class="tag tag-info">↠ 动态数据流</span><span class="tag ${audit.valid === false ? "tag-err" : "tag-ok"}">${audit.valid === false ? "审计链异常" : `审计链有效 · ${Number(audit.block_count || 0)}块`}</span><button class="btn btn-secondary btn-sm" onclick="verifyAuditChain()">验证审计链</button><button class="btn btn-primary btn-sm" onclick="refreshGovernanceGraph()">刷新图谱</button></div></div>
+    <div class="governance-flow" style="--workflow-count:${Math.max(workflow.length,1)}">${workflow.map(step => { const proof=nodes.find(node => node.node_type === "WORKFLOW_STEP" && node.entity_id === step.step_code); const hash=String(proof?.latest_block_hash || ""); const compliance=complianceStepEvidence(step.ordinal); return `<div class="governance-flow-step ${workflowStepClass(step.status)}" role="button" tabindex="0" onclick="openComplianceEvidence(${Number(step.ordinal)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openComplianceEvidence(${Number(step.ordinal)})}" title="${esc(hash || "等待步骤指纹")}"><div class="governance-flow-name">${step.ordinal}. ${esc(step.name)}</div><div class="governance-flow-proof">${proof?.latest_fingerprint_height ? `#${proof.latest_fingerprint_height} · ${esc(hash.slice(0,10))}…` : "等待步骤指纹"}</div><div class="compliance-step-control ${compliance.tone}">◈ ${esc(compliance.control)}</div></div>`; }).join("")}</div>
+    <div class="graph-toolbar" style="padding:0 16px 10px"><div class="graph-view-toggle" role="group" aria-label="血缘图谱视图切换"><button class="${STATE.graphView === "sankey" ? "on" : ""}" onclick="switchGraphView('sankey')">数据流视图</button><button class="${STATE.graphView === "relation" ? "on" : ""}" onclick="switchGraphView('relation')">关系追踪视图</button></div><div class="sankey-legend"><span>默认用桑基图看转化</span><span>关系图用于单条血缘排查</span></div></div>
+    ${STATE.graphView === "sankey" ? `<div class="graph-canvas-shell">${renderSankeyView()}</div>` : `<div class="governance-graph-grid"><div class="graph-canvas-shell"><div class="graph-toolbar"><div class="graph-metrics"><span>节点 <strong>${fmtNum(stats.nodes || 0)}</strong></span><span>关系 <strong>${fmtNum(stats.edges || 0)}</strong></span><span>问题 <strong style="color:var(--d)">${fmtNum(stats.types?.ISSUE || 0)}</strong></span><span>黄金数据 <strong style="color:var(--pl)">${fmtNum(stats.types?.MASTER || 0)}</strong></span></div><div class="graph-legend"><span><i style="color:#64748b">●</i> 来源</span><span><i style="color:#ef4444">●</i> 问题</span><span><i style="color:#3b82f6">●</i> 黄金数据</span><span><i style="color:#2563eb">●</i> 治理步骤</span><span><i style="color:#f97316">●</i> 哈希存证</span><span><i style="color:#10b981">●</i> 工厂/反馈</span></div></div><div class="graph-stage-large">${renderGovernanceGraph(graph)}</div></div><aside class="graph-node-detail" id="graphNodeDetail">${renderGraphNodeDetail(STATE.selectedGraphNodeId)}</aside></div>`}
+    <div class="graph-guidance"><span>${STATE.graphView === "sankey" ? "操作：河道宽度表示数据量，流光方向表示流转方向；点击步骤卡查看控制和哈希证据。" : "操作：点击节点切换右侧证据；沿关系继续追踪单条数据血缘。"}</span><span>典型路径：ERP/EAM → 问题记录 → 黄金编码 → 分发系统 → 工厂反馈 → 知识回流</span></div>
+  </section>`;
 }
 
 function renderKB(){
@@ -2040,7 +2576,6 @@ function renderKB(){
   const casesCount = STATE.masters.length;
   const vectorCount = STATE.vectorIndex?.count || 0;
   const vectorMeta = STATE.vectorIndex?.indexes?.[0] || {};
-  const graphStats = STATE.graphData?.stats || {};
 
   // 命中统计：本批次
   const records = STATE.records;
@@ -2134,9 +2669,9 @@ function renderKB(){
   return `
     <div class="page">
       <div class="card">
-        <div class="card-title"><span class="icon" style="background:rgba(139,92,246,.12);color:var(--pu)">📚</span>本地治理规则库</div>
+        <div class="card-title"><span class="icon" style="background:rgba(139,92,246,.12);color:var(--pu)">📚</span>企业标准知识库</div>
         <p style="font-size:12px;color:var(--t2);line-height:1.7;margin-bottom:12px">
-          本页规则均由本机内置配置实时计算，统计卡片数量与本批次命中情况来自真实计算结果。
+          标准版本、发布状态、引用位置与内容哈希由后端 RAG 知识库统一管理；统计卡片与本批次命中情况来自实时计算结果。
         </p>
         <div class="kb-grid">
           <div class="kb-stat k1"><div class="lbl">字段别名映射</div><div class="val">${fieldsCount}</div><div class="hit">${records.length ? `已自动识别 ${Object.keys(FIELD_ALIASES).filter(f => records[0] && records[0][f] !== undefined).length} 类字段` : "等待上传数据"}</div></div>
@@ -2148,51 +2683,41 @@ function renderKB(){
         </div>
       </div>
 
-      <div class="tech-workbench">
-        <div class="card">
-          <div class="card-head">
-            <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">V</span>通用 Embedding 向量库</div>
-            <span class="tag ${vectorCount ? "tag-ok" : "tag-muted"}">${fmtNum(vectorCount)} 条向量</span>
-          </div>
-          <div style="font-size:11px;color:var(--t3);margin-bottom:10px">${esc(vectorMeta.provider || "local")} / ${esc(vectorMeta.model || "feature-hash-v1")} · ${vectorMeta.dimension || 384} 维 · SQLite 持久化</div>
-          <div style="display:grid;grid-template-columns:minmax(0,1fr) 116px;gap:8px">
-            <input class="input" id="vectorQuery" value="SKF 6312 轴承 316L" aria-label="向量检索文本">
-            <select class="select" id="vectorModel"><option value="qwen">通义向量</option><option value="local">离线向量</option></select>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="btn btn-primary btn-sm" onclick="runVectorSearch()">向量检索</button>
-            <button class="btn btn-secondary btn-sm" onclick="rebuildVectorStore()">重建索引</button>
-          </div>
-          <div class="vector-results">
-            ${(STATE.vectorResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${esc(item.metadata?.standard_name || item.entity_id)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3);margin-top:3px">${esc(item.metadata?.category || "")} · ${esc(item.entity_id)}</div></div>`).join("") || `<div style="font-size:11px;color:var(--t3);padding:8px 0">输入自然语言可直接检索持久化黄金主数据向量。</div>`}
-          </div>
-          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bd)">
-            <div style="display:flex;justify-content:space-between;margin-bottom:7px"><strong>标准知识 RAG</strong><span class="tag tag-info">standard_kb · ${fmtNum(STATE.standardStats?.count || 0)} 条</span></div>
-            <div style="display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:8px"><input class="input" id="standardQuery" value="DN150 铸钢法兰闸阀" aria-label="标准知识检索"><button class="btn btn-secondary btn-sm" onclick="runStandardSearch()">检索依据</button></div>
-            <div class="vector-results">${(STATE.standardResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between"><strong>${esc(item.category)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3)">${esc(item.reference_id)} · ${esc(item.title)}</div></div>`).join("") || `<div style="font-size:11px;color:var(--t3);padding-top:7px">检索结果返回标准引用编号、类别和相似度。</div>`}</div>
-          </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">V</span>向量与 RAG 索引底座</div>
+          <div class="card-actions"><span class="tag ${vectorCount ? "tag-ok" : "tag-muted"}">${vectorCount ? "索引运行正常" : "等待建立索引"}</span><button class="btn btn-primary btn-sm" onclick="switchPage('search')">前往 Agent 工作台</button></div>
         </div>
-        <div class="card">
-          <div class="card-head">
-            <div class="card-title"><span class="icon" style="background:rgba(139,92,246,.12);color:var(--pu)">G</span>主数据关系、血缘与哈希审计链</div>
-            <button class="btn btn-ghost btn-sm" onclick="refreshGovernanceGraph()">刷新图谱</button>
-          </div>
-          <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--t3);margin-bottom:8px">
-            <span>节点 <strong style="color:var(--t)">${fmtNum(graphStats.nodes || 0)}</strong></span>
-            <span>关系 <strong style="color:var(--t)">${fmtNum(graphStats.edges || 0)}</strong></span>
-            <span>连通分量 <strong style="color:var(--t)">${fmtNum(graphStats.connected_components || 0)}</strong></span>
-            <span><i style="color:#3b82f6">●</i> 黄金主数据</span><span><i style="color:#ef4444">●</i> 问题记录</span><span><i style="color:#2563eb">●</i> 治理步骤</span><span><i style="color:#f97316">●</i> 哈希存证</span><span><i style="color:#10b981">●</i> 工厂/反馈</span>
-            <span class="tag ${graphStats.audit?.valid === false ? "tag-err" : "tag-ok"}">${graphStats.audit?.valid === false ? "审计链异常" : "审计链有效"}</span>
-          </div>
-          <div class="graph-stage">${renderGovernanceGraph(STATE.graphData)}</div>
+        <div class="kb-index-overview">
+          <div class="kb-index-intro"><strong>为 Agent 提供语义召回和标准依据</strong><span>该区域用于维护模型、索引和标准知识版本，不再作为日常业务检索入口。业务人员统一在 Agent 工作台输入自然语言任务。</span></div>
+          <div class="kb-index-metric"><span>黄金主数据向量</span><strong>${fmtNum(vectorCount)} 条</strong></div>
+          <div class="kb-index-metric"><span>向量模型 / 维度</span><strong>${esc(vectorMeta.model || "feature-hash-v1")} · ${vectorMeta.dimension || 384}D</strong></div>
+          <div class="kb-index-metric"><span>标准知识版本</span><strong>${esc(STATE.standardStats?.standard_version || "未发布")} · ${fmtNum(STATE.standardStats?.count || 0)} 条</strong></div>
         </div>
+        <div class="kb-index-actions"><span class="tag tag-info">${esc(vectorMeta.provider || "local")} · SQLite 持久化</span><span class="tag ${STATE.standardStats?.status === "PUBLISHED" ? "tag-ok" : "tag-warn"}">standard_kb · ${esc(STATE.standardStats?.status || "DRAFT")}</span><button class="btn btn-secondary btn-sm" onclick="rebuildVectorStore()">重建向量索引</button></div>
+        <details class="kb-verify">
+          <summary><span>检索效果验证</span><span style="font-size:9px;color:var(--t3);font-weight:500">仅供知识管理员调试召回率与标准引用</span></summary>
+          <div class="kb-verify-body">
+            <div class="kb-test-block">
+              <h4>黄金主数据向量验证</h4><p>验证不同模型对已治理主数据的 Top-K 召回效果。</p>
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) 108px;gap:7px"><input class="input" id="vectorQuery" value="SKF 6312 轴承 316L" aria-label="向量检索测试文本"><select class="select" id="vectorModel"><option value="qwen">通义向量</option><option value="local">离线向量</option></select></div>
+              <button class="btn btn-secondary btn-sm" style="margin-top:7px" onclick="runVectorSearch()">运行召回测试</button>
+              <div class="vector-results">${(STATE.vectorResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${esc(item.metadata?.standard_name || item.entity_id)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3);margin-top:3px">${esc(item.metadata?.category || "")} · ${esc(item.entity_id)}</div></div>`).join("") || `<div style="font-size:10px;color:var(--t3);padding:6px 0">尚未运行向量召回测试。</div>`}</div>
+            </div>
+            <div class="kb-test-block">
+              <h4>标准知识引用验证</h4><p>验证分类建议是否返回版本、条款和引用依据。</p>
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) 82px;gap:7px"><input class="input" id="standardQuery" value="DN150 铸钢法兰闸阀" aria-label="标准知识验证文本"><button class="btn btn-secondary btn-sm" onclick="runStandardSearch()">验证引用</button></div>
+              <div class="vector-results">${(STATE.standardResults || []).map(item => `<div class="vector-hit"><div style="display:flex;justify-content:space-between"><strong>${esc(item.category)}</strong><span class="score">${fmtPct(item.score)}</span></div><div style="color:var(--t3)">${esc(item.reference_id)} · ${esc(item.title)}</div></div>`).join("") || `<div style="font-size:10px;color:var(--t3);padding:6px 0">尚未运行标准引用验证。</div>`}</div>
+            </div>
+          </div>
+        </details>
       </div>
 
       <!-- SY/T5497-2018 分类树 -->
       <div class="card">
         <div class="card-head">
           <div class="card-title"><span class="icon" style="background:rgba(16,185,129,.12);color:var(--s)">🌲</span>SY/T 5497-2018 备品备件分类树（石油行业标准）</div>
-          <div style="font-size:11px;color:var(--t3)">本批次已匹配 ${usedCategories.size} 个分类 · 分类树共 ${categoryStats.major} 大类 · ${categoryStats.middle} 中类 · ${categoryStats.minor} 小类</div>
+          <div style="font-size:11px;color:var(--t3)">本批次已匹配 ${usedCategories.size} 个分类 · 已发布标准共 ${STATE.standardStats?.hierarchy?.major ?? categoryStats.major} 大类 · ${STATE.standardStats?.hierarchy?.middle ?? categoryStats.middle} 中类 · ${STATE.standardStats?.hierarchy?.minor ?? categoryStats.minor} 小类 · ${STATE.standardStats?.hierarchy?.items ?? "-"} 个末级编码</div>
         </div>
         <div class="tbl-wrap preview-table" style="max-height:480px">
           <table>
@@ -2303,7 +2828,7 @@ function renderKB(){
               <tr><td>CASE-002</td><td>轴承品牌型号去重</td><td>14 条（3 系统）</td><td>3 种主数据</td><td><strong style="color:var(--s)">78.6%</strong></td></tr>
               <tr><td>CASE-003</td><td>闸阀量纲统一</td><td>18 条（3 系统）</td><td>5 种主数据</td><td><strong style="color:var(--s)">72.2%</strong></td></tr>
               <tr><td>CASE-004</td><td>O 型圈规格标准化</td><td>16 条（2 系统）</td><td>3 种主数据</td><td><strong style="color:var(--s)">81.3%</strong></td></tr>
-              <tr><td>CASE-011</td><td>全集团跨工厂推广</td><td>50,000 条（5 工厂）</td><td>12,000 种主数据</td><td><strong style="color:var(--s)">76.0%</strong></td></tr>
+              <tr><td>CASE-011</td><td>规模化情景测算（非生产实绩）</td><td>50,000 条（5 工厂）</td><td>12,000 种主数据</td><td><strong style="color:var(--w)">76.0%（假设）</strong></td></tr>
             </tbody></table>
           </div>
         </div>
@@ -2320,7 +2845,7 @@ function renderIngest(){
   const closedLoop = Boolean(STATE.workflow?.closed_loop);
   const hasGovernedBatch = Boolean(STATE.currentBatch && STATE.records.length);
   const pendingSteps = workflow.filter(step => step.status !== "COMPLETED").map(step => step.name);
-  const ocrBusy = Boolean(STATE.ocrProcessing || STATE.ocrInstall?.installing);
+  const ingestMeta = classificationMeta(STATE.ingestClassification);
   return `
     <div class="page">
       <!-- ① 上传区 -->
@@ -2335,6 +2860,15 @@ function renderIngest(){
           <div class="t1">点击或拖拽 CSV 文件到此处上传</div>
           <div class="t2">系统将自动识别列名、抽取关键属性、执行相似度分组并生成 MDM 编码</div>
         </div>
+        <div class="ingest-policy">
+          <div class="ingest-policy-copy"><strong>数据分级与 AI 出域控制</strong><span id="classificationPolicyHint">${ingestMeta.label}数据：${ingestMeta.detail}。该标记会随批次保存，用于控制外部 AI 调用并为治理报告标注分级。</span></div>
+          <div><label class="form-label" for="dataClassification">本批次数据级别</label><select class="select" id="dataClassification" onchange="setIngestClassification(this.value)">
+            <option value="PUBLIC" ${STATE.ingestClassification === "PUBLIC" ? "selected" : ""}>PUBLIC · 公开</option>
+            <option value="INTERNAL" ${STATE.ingestClassification === "INTERNAL" ? "selected" : ""}>INTERNAL · 内部</option>
+            <option value="CONFIDENTIAL" ${STATE.ingestClassification === "CONFIDENTIAL" ? "selected" : ""}>CONFIDENTIAL · 机密</option>
+            <option value="RESTRICTED" ${STATE.ingestClassification === "RESTRICTED" ? "selected" : ""}>RESTRICTED · 受限</option>
+          </select></div>
+        </div>
         <div class="progress" id="progressBox">
           <div class="progress-row">
             <span>处理进度</span>
@@ -2347,21 +2881,10 @@ function renderIngest(){
 
       <div class="card">
         <div class="card-head">
-          <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">▣</span>图文智能填报</div>
-          <div class="card-actions">${renderOCRInstallControl()}</div>
+          <div class="card-title"><span class="icon" style="background:rgba(6,182,212,.12);color:var(--a)">AI</span>单张图片填报</div>
+          <button class="btn btn-secondary btn-sm" onclick="switchPage('search')">前往 Agent 工作台</button>
         </div>
-        <div class="two">
-          <div>
-            <div class="form-row"><label class="form-label">工业铭牌或物料图片</label><input class="input" id="ocrFile" type="file" accept="image/*"></div>
-            <div class="form-row"><label class="form-label">辅助文字（仅在真实 OCR 不可用时使用）</label><input class="input" id="ocrHint" placeholder="例如：SKF 6312-2RS1 轴承 316L"></div>
-            <div class="form-row"><label class="form-label">申请主体</label><select class="select" id="ocrPlant"><option value="GROUP">集团总部</option><option value="SHANGHAI">上海工厂</option><option value="BEIJING">北京工厂</option></select></div>
-            <button class="btn btn-primary" onclick="runImageOCR()" ${ocrBusy ? "disabled" : ""}>${STATE.ocrProcessing ? "正在识别图片..." : STATE.ocrInstall?.installing ? "正在安装 OCR" : "识别并标准化"}</button>
-            ${renderOCRInstallProgress()}
-          </div>
-          <div>
-            ${STATE.ocrProcessing ? emptyState("◌","OCR 模型正在解析","正在提取铭牌文字与标准字段，请稍候") : STATE.ocrResult ? renderOCRResult(STATE.ocrResult) : emptyState("▣","等待图片识别","上传真实铭牌照片后展示原文、字段、置信度和识别引擎")}
-          </div>
-        </div>
+        <p style="font-size:11px;color:var(--t2);line-height:1.7">本页保留批量 CSV 接入。工业铭牌和物料图片已统一到 Agent 工作台，由同一入口完成图片识别、标准字段提取、相似主数据检索和转申请。</p>
       </div>
 
       <!-- ② 字段映射 -->
@@ -2458,7 +2981,10 @@ function renderOCRResult(result){
     </div>
     <div style="margin-top:9px;color:var(--a)">标准名称预览：${esc(result.standard_name_preview || "-")}</div>
     ${result.warning ? `<div style="margin-top:8px;color:var(--w)">${esc(result.warning)}</div>` : ""}
-    <button class="btn btn-success btn-sm" style="margin-top:10px" onclick="applyOCRToLifecycle()">转为主数据申请</button>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-primary btn-sm" onclick="searchOCRMatches()">检索相似主数据与标准</button>
+      <button class="btn btn-success btn-sm" onclick="applyOCRToLifecycle()">转为主数据申请</button>
+    </div>
   </div>`;
 }
 
@@ -2467,11 +2993,13 @@ let ocrInstallPollTimer = null;
 async function submitPendingOCR(pending){
   if(!pending?.file) return;
   STATE.ocrProcessing = true;
-  if(STATE.currentPage === "ingest") render();
+  if(["ingest","search"].includes(STATE.currentPage)) render();
   const form = new FormData();
   form.append("image", pending.file);
   form.append("hint_text", pending.hint || "");
   form.append("plant_code", pending.plant || "GROUP");
+  form.append("data_classification", STATE.ingestClassification || "INTERNAL");
+  form.append("processing_purpose", "图文智能填报与物料主数据治理");
   try {
     STATE.ocrResult = await apiRequest("/ocr", { method:"POST", body:form });
     STATE.ocrInstall = STATE.ocrResult.install_status || STATE.ocrInstall;
@@ -2481,7 +3009,7 @@ async function submitPendingOCR(pending){
     toast("图片识别失败：" + error.message, "error", 5000);
   } finally {
     STATE.ocrProcessing = false;
-    if(STATE.currentPage === "ingest") render();
+    if(["ingest","search"].includes(STATE.currentPage)) render();
   }
 }
 
@@ -2489,7 +3017,7 @@ async function pollOCRInstallation(){
   if(ocrInstallPollTimer) clearTimeout(ocrInstallPollTimer);
   try {
     STATE.ocrInstall = await apiRequest("/ocr/install");
-    if(STATE.currentPage === "ingest") render();
+    if(["ingest","search"].includes(STATE.currentPage)) render();
     if(STATE.ocrInstall.installing){
       ocrInstallPollTimer = setTimeout(pollOCRInstallation, 1500);
       return;
@@ -2660,6 +3188,8 @@ async function applyMappingAndGovern(){
       body:JSON.stringify({
         filename:pendingCSV.filename,
         encoding:pendingCSV.encoding,
+        data_classification:STATE.ingestClassification || "INTERNAL",
+        processing_purpose:"物料主数据治理",
         records
       })
     });
@@ -2681,18 +3211,21 @@ async function applyMappingAndGovern(){
 }
 
 window.runAgentPlan = async function(){
-  const task = $("#agentTask")?.value?.trim();
+  if(!hasPermission("ai.use")){ toast("当前账号无 AI 使用权限", "error"); return; }
+  const task = $("#agentTask")?.value?.trim() || STATE.agentTask.trim();
   if(!task){ toast("请输入治理任务", "warn"); return; }
+  STATE.agentTask = task;
   try {
     STATE.agentPlan = await apiRequest("/agent/plan", { method:"POST", body:JSON.stringify({
       task, batch_id:STATE.currentBatch?.batch_id, plant_code:STATE.distributionPlant || "GROUP"
     })});
-    toast(STATE.agentPlan.runtime?.active ? "通义千问已完成任务编排" : "已使用本地可解释Agent完成编排", "success");
+    toast(STATE.agentPlan.runtime?.active ? "通义千问已生成治理计划" : "本地可解释 Agent 已生成治理计划", "success");
     render();
-  } catch(error){ toast("Agent编排失败：" + error.message, "error"); }
+  } catch(error){ toast("治理计划生成失败：" + error.message, "error"); }
 };
 
 window.runCompetitionDemo = async function(){
+  if(!hasPermission("data.ingest")){ toast("当前账号无演示批次创建权限", "error"); return; }
   try {
     toast("正在执行多源接入、治理、跨工厂分发和反馈回流", "info", 5000);
     const payload = await apiRequest("/demo/run", { method:"POST", body:"{}" });
@@ -2934,19 +3467,187 @@ window.removeSearchCondition = function(idx){
 };
 
 /* ===================== 渲染：检索（增强版）==================== */
+function renderNaturalDistributionAgent(){
+  const approvedMasters = STATE.masters.filter(m => m.decision === "AUTO_MERGE" || m.decision === "NEW" || m.decision === "CONFIRMED_NEW");
+  const canPlan = hasPermission("ai.use");
+  const canExecute = hasPermission("distribution.execute");
+  const sample = approvedMasters[0] || {};
+  const example = `帮我把【品牌 ${sample.brand || "SKF"}】【型号 ${sample.model || "6312"}】【备品备件名称 ${sample.standard_name || "深沟球轴承"}】分别发往【ERP系统】【上海厂】`;
+  const instruction = STATE.distributionInstruction || example;
+  const plan = STATE.distributionPlan;
+  const result = STATE.distributionResult;
+  return `
+    <div class="card">
+      <div class="card-head"><div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">AI</span>自然语言跨系统分发 Agent</div><span class="tag tag-info">先解析计划 · 确认后执行</span></div>
+      <p style="font-size:11px;color:var(--t3);margin-bottom:10px">检索或输入品牌、型号、备品备件名称、目标业务系统与工厂。Agent 只分发匹配到的黄金主数据，并输出任务载荷、执行结果与哈希凭证。</p>
+      <textarea class="textarea" id="distributionInstruction" style="min-height:56px" oninput="STATE.distributionInstruction=this.value;STATE.distributionPlan=null;STATE.distributionResult=null">${esc(instruction)}</textarea>
+      <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap"><button class="btn btn-primary" onclick="planNaturalDistribution()" ${STATE.distributionBusy || !canPlan ? "disabled" : ""}>解析分发计划</button>${plan?.requires_confirmation ? `<button class="btn btn-success" onclick="confirmNaturalDistribution()" ${STATE.distributionBusy || !canExecute ? "disabled" : ""}>确认并执行 ${plan.task_count} 个任务</button>` : ""}${result ? `<button class="btn btn-secondary" onclick="switchPage('distribute')">查看分发中心</button>` : ""}</div>
+      ${!canPlan ? `<div style="font-size:10px;color:var(--w);margin-top:8px">当前账号缺少 AI 使用权限。</div>` : plan?.requires_confirmation && !canExecute ? `<div style="font-size:10px;color:var(--w);margin-top:8px">当前账号可以查看计划，但没有跨系统分发执行权限。</div>` : ""}
+      ${plan ? `<div class="agent-result" style="margin-top:10px"><strong>${esc(plan.question || "解析完成")}</strong><div style="margin-top:6px;color:var(--t2)">筛选：品牌 ${esc(plan.filters?.brand || "不限")} · 型号 ${esc(plan.filters?.model || "不限")} · 名称 ${esc(plan.filters?.material_name || "不限")}</div><div style="margin-top:4px;color:var(--t2)">目标：${(plan.target_systems || []).map(esc).join(" / ") || "未识别"} → ${(plan.target_plants || []).map(code => esc(PLANT_NAMES[code] || code)).join(" / ")}</div>${plan.warning ? `<div style="color:var(--w);margin-top:6px">${esc(plan.warning)}</div>` : ""}${(plan.matched_masters || []).length ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">${plan.matched_masters.map(item => `<span class="tag tag-ok">${esc(item.mdm_code)} · ${esc(item.standard_name)}</span>`).join("")}</div>` : ""}</div>` : ""}
+      ${result ? `<div class="agent-result" style="margin-top:10px;border-color:rgba(16,185,129,.45)"><strong style="color:var(--s)">分发执行完成</strong><div style="margin-top:6px;color:var(--t2)">成功 ${fmtNum(result.success_count || 0)} 个任务 · 失败 ${fmtNum(result.failed_count || 0)} 个任务 · 生成 ${fmtNum(result.artifacts?.length || 0)} 个可验证成果</div></div>` : ""}
+    </div>`;
+}
+
+function renderGovernanceAgent(){
+  const attempted = Boolean(STATE.agentPlan?.runtime);
+  const online = attempted ? Boolean(STATE.agentPlan.runtime.active) : Boolean(STATE.agentCapabilities?.llm_agent);
+  const runtimeLabel = attempted ? (online ? "通义千问在线" : "本地可解释编排") : (online ? "通义千问已配置" : "本地可解释编排");
+  const canPlan = hasPermission("ai.use");
+  const canDemo = hasPermission("data.ingest");
+  const batchName = STATE.currentBatch?.filename || "未选择批次";
+  const progress = Number(STATE.workflow?.progress || 0);
+  return `<div class="card">
+    <div class="card-head"><div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">AI</span>治理编排 Agent</div><div class="card-actions"><span class="tag ${online ? "tag-ok" : "tag-muted"}">${runtimeLabel}</span><span class="tag tag-warn">演示闭环隔离运行</span></div></div>
+    <div class="agent-scope"><span class="tag tag-info">批次 · ${esc(batchName)}</span><span class="tag tag-info">范围 · ${esc(PLANT_NAMES[STATE.viewPlant] || STATE.viewPlant || "集团总部")}</span><span class="tag ${STATE.workflow?.closed_loop ? "tag-ok" : "tag-muted"}">闭环进度 · ${progress}%</span></div>
+    <div class="agent-command-row">
+      <input class="input" id="agentTask" value="${esc(STATE.agentTask)}" oninput="STATE.agentTask=this.value" aria-label="治理任务">
+      <button class="btn btn-primary" onclick="runAgentPlan()" ${canPlan ? "" : "disabled"}>生成治理计划</button>
+      <button class="btn btn-warn" onclick="runCompetitionDemo()" ${canDemo ? "" : "disabled"} title="创建隔离演示批次，不处理当前生产数据">运行演示闭环</button>
+    </div>
+    ${!canPlan ? `<div style="font-size:10px;color:var(--w);margin-top:8px">当前账号缺少 AI 使用权限。</div>` : ""}
+    ${STATE.agentPlan ? `<div class="agent-result"><strong style="color:var(--t)">${esc(STATE.agentPlan.plan?.summary || "计划生成完成")}</strong><br>${(STATE.agentPlan.plan?.steps || []).map(item => `${item.step}. ${esc(item.name || item.code || "")}`).join(" → ")}<br><span style="color:var(--t3)">${esc(STATE.agentPlan.runtime?.warning || STATE.agentPlan.runtime?.method || "")}</span></div>` : ""}
+  </div>`;
+}
+
+window.switchAgentWorkspace = function(tab){
+  if(!["search","distribute","govern"].includes(tab)) return;
+  const searchInput = $("#searchInput");
+  const distributionInput = $("#distributionInstruction");
+  const agentInput = $("#agentTask");
+  if(searchInput) STATE.searchQuery = searchInput.value;
+  if(distributionInput) STATE.distributionInstruction = distributionInput.value;
+  if(agentInput) STATE.agentTask = agentInput.value;
+  STATE.agentWorkspaceTab = tab;
+  document.querySelectorAll(".agent-mode-tab").forEach(button => {
+    const selected = button.dataset.agentTab === tab;
+    button.classList.toggle("on", selected);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  document.querySelectorAll(".agent-workspace-panel").forEach(panel => {
+    const selected = panel.dataset.agentPanel === tab;
+    panel.classList.toggle("on", selected);
+    panel.hidden = !selected;
+  });
+};
+
+window.searchOCRMatches = function(){
+  const result = STATE.ocrResult;
+  if(!result) return;
+  const fields = result.fields || {};
+  const query = [
+    result.standard_name_preview,
+    fields.brand,
+    fields.model,
+    fields.material,
+    fields.pressure,
+    fields.dn ? `DN${fields.dn}` : "",
+    result.category,
+  ].filter(Boolean).join(" ") || result.raw_text || "";
+  if(!query){ toast("图片尚未识别出可检索字段", "warn"); return; }
+  STATE.agentPrompt = query;
+  STATE.searchQuery = query;
+  STATE.agentIntent = "SEARCH";
+  STATE.agentIntentConfidence = 1;
+  STATE.agentIntentReason = "根据图片识别字段检索主数据与标准知识";
+  render();
+  setTimeout(() => doSearch(), 0);
+};
+
+window.handleAgentTabKey = function(event){
+  if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll(".agent-mode-tab")];
+  if(!tabs.length) return;
+  event.preventDefault();
+  const current = Math.max(0, tabs.indexOf(event.currentTarget));
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 :
+    (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  const target = tabs[next];
+  window.switchAgentWorkspace(target.dataset.agentTab);
+  target.focus();
+};
+
+function renderDistributionPlanTasks(plan){
+  const tasks = (plan?.tasks || []).filter(task => task.eligible !== false);
+  const selected = new Set(STATE.distributionSelectedTasks || []);
+  const selectedTasks = tasks.filter(task => selected.has(task.task_id));
+  const selectedCodes = [...new Set(selectedTasks.map(task => task.mdm_code))];
+  const taskCount = selectedTasks.length;
+  const principal = AUTH_STATE.principal || {};
+  const batch = STATE.currentBatch || {};
+  const classification = String(batch.data_classification || STATE.ingestClassification || "INTERNAL").toUpperCase();
+  const classificationInfo = classificationMeta(classification);
+  const canExecute = hasPermission("distribution.execute");
+  const targetSystems = [...new Set(selectedTasks.map(task => task.target_system).filter(Boolean))];
+  const targetPlants = [...new Set(selectedTasks.map(task => task.target_plant).filter(Boolean))];
+  const policyReady = canExecute && taskCount > 0;
+  const policyTitle = !canExecute ? "策略预检未通过：当前角色无分发权限" : !taskCount ? "策略预检等待：请先选择任务" : "策略预检通过：可进入人工确认";
+  const policyScope = `${principal.display_name || "未登录"} · ${principal.role_label || principal.role || "未识别角色"} · ${classification}/${classificationInfo.label}`;
+  const policyTarget = `${targetPlants.map(code => PLANT_NAMES[code] || code).join(" / ") || "未选择工厂"} → ${targetSystems.join(" / ") || "未选择系统"}`;
+  return `<div class="agent-result-card">
+    <h4>分发计划 · 已拆分 ${fmtNum(tasks.length)} 个可执行任务</h4>
+    <div style="font-size:10px;color:var(--t2);line-height:1.7">${esc(plan.question || "请确认目标系统、工厂和主数据候选")}</div>
+    <div class="agent-control-line"><span class="summary">当前选择 <strong style="color:var(--s)">${fmtNum(taskCount)}</strong> 个任务 · ${fmtNum(selectedCodes.length)} 条黄金主数据</span><button class="btn btn-secondary btn-sm" onclick="selectDistributionTasks('all')">全选</button><button class="btn btn-secondary btn-sm" onclick="selectDistributionTasks('top')">仅选最高相似</button><button class="btn btn-ghost btn-sm" onclick="selectDistributionTasks('none')">清空</button></div>
+    <div class="distribution-task-list">${tasks.map(task => {
+      const checked = selected.has(task.task_id);
+      const id = `distributionTask_${String(task.task_id || "").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      return `<label class="distribution-task ${checked ? "selected" : ""}" for="${id}"><input id="${id}" type="checkbox" ${checked ? "checked" : ""} onchange="toggleDistributionTask('${esc(task.task_id)}')"><div><div class="distribution-task-name">${esc(task.standard_name || task.mdm_code || "未命名主数据")}</div><div class="distribution-task-meta"><code>${esc(task.mdm_code || "-")}</code> · ${esc(PLANT_NAMES[task.target_plant] || task.target_plant || "集团总部")} → ${esc(task.target_system || "-")}</div></div><div class="distribution-reasons">${(task.reasons || []).map(esc).join(" · ") || "候选主数据"}</div><div class="distribution-score">${fmtPct(task.similarity || task.score || 0)}<div style="font-size:9px;color:var(--t3);font-weight:500">${esc(task.match_level || "候选")}</div></div></label>`;
+    }).join("") || `<div style="font-size:11px;color:var(--t3);padding:12px 0">没有找到可执行候选，请补充品牌、型号或物料名称。</div>`}</div>
+    ${plan.warning ? `<div style="font-size:10px;color:var(--w);margin-top:8px">${esc(plan.warning)}</div>` : ""}
+    <div class="distribution-policy-preview ${policyReady ? "" : "blocked"}">
+      <div class="distribution-policy-icon">${policyReady ? "✓" : "!"}</div>
+      <div><div class="distribution-policy-title">${esc(policyTitle)}</div><div class="distribution-policy-detail">${esc(policyScope)}<br>${esc(policyTarget)}<br>最小必要载荷：编码、名称、品牌、型号、分类及必要规格；非必要联系人和合同价格不进入载荷。</div></div>
+      <button class="btn btn-ghost btn-sm" onclick="openComplianceEvidence(7)">查看控制依据</button>
+    </div>
+    <div class="agent-control-line"><button class="btn btn-success" onclick="confirmNaturalDistribution()" ${taskCount && hasPermission("distribution.execute") && !STATE.distributionBusy ? "" : "disabled"}>确认执行已选 ${fmtNum(taskCount)} 个任务</button>${!hasPermission("distribution.execute") ? `<span style="font-size:10px;color:var(--w)">当前账号只有查看计划权限，不能执行分发。</span>` : ""}${STATE.distributionBusy ? `<span style="font-size:10px;color:var(--t3)">正在生成接口载荷与哈希凭证…</span>` : ""}</div>
+  </div>`;
+}
+
+function renderUnifiedAgentResult(){
+  if(STATE.agentIntent === "DISTRIBUTE" && STATE.distributionPlan){
+    return `<div class="agent-result-stack">${renderDistributionPlanTasks(STATE.distributionPlan)}${STATE.distributionResult ? `<div class="agent-result-card" style="border-color:rgba(16,185,129,.45)"><h4 style="color:var(--s)">分发执行完成</h4><div style="font-size:11px;color:var(--t2)">成功 ${fmtNum(STATE.distributionResult.success_count || 0)} 个任务 · 失败 ${fmtNum(STATE.distributionResult.failed_count || 0)} 个任务 · 生成 ${fmtNum(STATE.distributionResult.artifacts?.length || 0)} 个可验证成果</div></div>` : ""}</div>`;
+  }
+  if(STATE.agentIntent === "GOVERN" && STATE.agentPlan){
+    const plan = STATE.agentPlan.plan || STATE.agentPlan;
+    const runtime = STATE.agentPlan.runtime || {};
+    return `<div class="agent-result-stack"><div class="agent-result-card"><h4>治理编排计划</h4><div style="font-size:11px;color:var(--t2);margin-bottom:8px">${esc(plan.summary || plan.objective || "计划已生成")}</div>${(plan.steps || []).map((step, index) => `<div class="agent-plan-step"><b>${step.step || index + 1}</b><span><strong>${esc(step.name || step.code || "治理步骤")}</strong>${step.description ? ` · ${esc(step.description)}` : ""}</span></div>`).join("")}<div style="font-size:10px;color:var(--t3);margin-top:8px">${esc(runtime.warning || runtime.method || "计划仅供确认，执行由治理流程控制")}</div></div></div>`;
+  }
+  return "";
+}
+
 function renderSearch(){
   const hotWords = countHotSearchWords();
+  const configuredOnline = Boolean(STATE.agentCapabilities?.llm_agent || STATE.agentCapabilities?.speech?.qwen_asr_configured);
+  const ocrBusy = Boolean(STATE.ocrProcessing || STATE.ocrInstall?.installing);
+  const prompt = STATE.agentPrompt || STATE.searchQuery || "";
   return `
     <div class="page">
-      <div class="card">
-        <div class="card-title"><span class="icon" style="background:rgba(139,92,246,.12);color:var(--pu)">🔍</span>智能检索</div>
-        <p style="font-size:11px;color:var(--t3);margin-bottom:10px">支持自然语言搜索。例如：<em style="color:var(--pl)">"找一下SKF品牌DN200的机械密封，材质要316L的"</em> → 系统将自动识别品牌、品类、规格等条件。</p>
-        <div class="input-search" style="margin-bottom:10px">
-          <input type="text" id="searchInput" class="input" placeholder="输入自然语言描述，如：找一下SKF品牌DN200的机械密封，材质要316L的" oninput="onSearchInput(this)" onkeydown="if(event.key==='Enter')doSearch()">
+      <div class="agent-workspace-nav">
+        <div class="agent-workspace-brand"><span class="icon">AI</span><div><strong>主数据智能 Agent</strong><span>一个入口自动识别检索、分发或治理意图</span></div></div>
+        <div class="card-actions"><span class="tag ${configuredOnline ? "tag-ok" : "tag-muted"}">${configuredOnline ? "在线能力已配置" : "本地降级可用"}</span><span class="tag tag-info">计划与执行分离</span></div>
+      </div>
+      <div class="card agent-unified-card">
+        <div class="agent-unified-head"><div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">AI</span>统一任务入口</div><span class="tag tag-info">输入一句话即可识别任务</span></div>
+        <p class="agent-unified-lead">可以直接说“找与 SKF 6312 相似的轴承”，也可以说“把这条发到 ERP 上海厂”，或“治理当前批次并完成闭环”。系统先识别意图，再展示候选、任务和证据；分发与治理必须确认后执行。</p>
+        <div class="agent-composer" aria-busy="${STATE.agentBusy ? "true" : "false"}">
+          <textarea id="searchInput" class="input" aria-label="主数据 Agent 指令" placeholder="输入检索、分发或治理指令，例如：找与SKF 6312最相似的一条并发到ERP上海厂" oninput="STATE.agentPrompt=this.value;STATE.searchQuery=this.value;onSearchInput(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitAgentPrompt()}">${esc(prompt)}</textarea>
+          <button class="btn agent-voice-btn ${STATE.speechListening ? "active" : ""}" id="agentVoiceButton" onclick="toggleAgentVoice()" aria-label="语音输入" aria-pressed="${STATE.speechListening ? "true" : "false"}" title="${STATE.speechListening ? "停止录音" : "语音输入"}">${STATE.speechListening ? "■" : "🎙"}</button>
+          <button class="btn btn-primary agent-submit" onclick="submitAgentPrompt()" ${STATE.agentBusy || !hasPermission("ai.use") ? "disabled" : ""}>${STATE.agentBusy ? "处理中…" : "识别并执行下一步"}</button>
         </div>
+        <div id="agentVoiceStatus" class="agent-voice-status" aria-live="polite">${esc(STATE.speechStatus || "语音会先转成文字，不会自动提交分发")}</div>
+        <div class="agent-input-tools" aria-label="Agent 多模态输入">
+          <input class="agent-image-input" id="ocrFile" type="file" accept="image/*" onchange="const label=document.getElementById('agentImageName');if(label)label.textContent=this.files?.[0]?.name||'未选择图片'">
+          <label class="agent-image-tool" for="ocrFile">▣ 图片填报</label><span class="agent-image-name" id="agentImageName">上传工业铭牌或物料图片</span>
+          <input class="input" id="ocrHint" style="max-width:250px;min-height:30px;padding:5px 9px;font-size:10px" placeholder="辅助文字（可选，如 SKF 6312 316L）" aria-label="图片识别辅助文字">
+          <select class="select" id="ocrPlant" style="width:118px;min-height:30px;padding:5px 7px;font-size:10px" aria-label="图片填报申请主体"><option value="GROUP">集团总部</option><option value="SHANGHAI">上海工厂</option><option value="BEIJING">北京工厂</option></select>
+          <button class="btn btn-secondary btn-sm" onclick="runImageOCR()" ${ocrBusy ? "disabled" : ""}>${ocrBusy ? "正在识别图片..." : "识别图片"}</button>
+        </div>
+        ${ocrBusy ? `<div class="agent-ocr-result">${emptyState("◌","正在识别图片","正在提取铭牌文字、标准字段和可信度")}</div>` : STATE.ocrResult ? `<div class="agent-ocr-result">${renderOCRResult(STATE.ocrResult)}</div>` : ""}
+        <div class="agent-quick-actions"><span class="tag tag-muted" data-example="找一下SKF 6312相似的轴承" onclick="useAgentExample(this.dataset.example)">检索相似物料</span><span class="tag tag-muted" data-example="把最相似的一条发到ERP上海厂" onclick="useAgentExample(this.dataset.example)">只分发一条</span><span class="tag tag-muted" data-example="治理当前批次并完成跨工厂反馈闭环" onclick="useAgentExample(this.dataset.example)">生成治理计划</span></div>
+        ${STATE.agentIntent ? `<div class="agent-intent-bar"><strong>已识别：${esc({SEARCH:"智能检索",DISTRIBUTE:"跨系统分发",GOVERN:"治理编排"}[STATE.agentIntent] || STATE.agentIntent)}</strong><span class="tag tag-ok">置信度 ${fmtPct(STATE.agentIntentConfidence)}</span><span style="color:var(--t3)">${esc(STATE.agentIntentReason)}</span></div>` : ""}
         <div id="parsedConditions" style="margin-bottom:10px;display:none"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
-          <button class="btn btn-primary" onclick="doSearch()">🔍 智能检索</button>
+          <button class="btn btn-secondary" onclick="doSearch()">仅执行检索</button>
           <button class="btn btn-secondary" onclick="clearSearchHistory()">清空历史</button>
           <button class="adv-filter-toggle" onclick="toggleAdvFilter()" id="advFilterToggle">⚙ 高级筛选</button>
         </div>
@@ -3005,9 +3706,9 @@ function renderSearch(){
               </div>
             </div>
             <div class="match-mode">
-              <label><input type="radio" name="matchMode" value="and" checked> 全部满足（AND）</label>
+              <label><input type="radio" name="matchMode" value="and"> 全部满足（AND）</label>
               <label><input type="radio" name="matchMode" value="or"> 任一满足（OR）</label>
-              <label><input type="radio" name="matchMode" value="fuzzy"> 模糊匹配</label>
+              <label><input type="radio" name="matchMode" value="fuzzy" checked> 模糊匹配</label>
             </div>
           </div>
         </div>
@@ -3017,7 +3718,8 @@ function renderSearch(){
             ${hotWords.length ? hotWords.map(w => `<span class="hot-word" onclick="quickSearch('${esc(w.word)}')">${esc(w.word)} <span class="cnt">${w.count}</span></span>`).join("") : `<span style="font-size:11px;color:var(--t3)">暂无搜索历史</span>`}
           </div>
         </div>
-        <div id="searchResult"></div>
+        <div id="searchResult">${STATE.searchResultHtml || ""}</div>
+        <div id="agentActionResult">${renderUnifiedAgentResult()}</div>
       </div>
     </div>
   `;
@@ -3032,16 +3734,159 @@ function countHotSearchWords(){
   return Array.from(m, ([word, count]) => ({ word, count })).sort((a,b) => b.count - a.count).slice(0, 12);
 }
 
+window.useAgentExample = function(example){
+  const input = $("#searchInput");
+  if(!input) return;
+  input.value = example || "";
+  STATE.agentPrompt = input.value;
+  STATE.searchQuery = input.value;
+  input.focus();
+  onSearchInput(input);
+};
+
+window.toggleDistributionTask = function(taskId){
+  const selected = new Set(STATE.distributionSelectedTasks || []);
+  if(selected.has(taskId)) selected.delete(taskId); else selected.add(taskId);
+  STATE.distributionSelectedTasks = [...selected];
+  render();
+};
+
+window.selectDistributionTasks = function(mode){
+  const tasks = (STATE.distributionPlan?.tasks || []).filter(task => task.eligible !== false);
+  if(mode === "none") STATE.distributionSelectedTasks = [];
+  else if(mode === "top"){
+    const top = [...tasks].sort((a,b) => Number(b.similarity || b.score || 0) - Number(a.similarity || a.score || 0))[0];
+    STATE.distributionSelectedTasks = top ? [top.task_id] : [];
+  } else STATE.distributionSelectedTasks = tasks.map(task => task.task_id);
+  render();
+};
+
+window.submitAgentPrompt = async function(){
+  if(!hasPermission("ai.use")){ toast("当前账号无 AI 使用权限", "error"); return; }
+  const input = $("#searchInput");
+  const text = input?.value?.trim();
+  if(!text){ toast("请输入检索、分发或治理指令", "warn"); return; }
+  if(STATE.agentBusy) return;
+  STATE.agentPrompt = text; STATE.searchQuery = text; STATE.agentBusy = true; STATE.speechStatus = "正在识别任务意图…";
+  try {
+    const route = await apiRequest("/agent/query", {method:"POST", body:JSON.stringify({
+      text, batch_id:STATE.currentBatch?.batch_id, plant_code:STATE.viewPlant === "GROUP" ? undefined : STATE.viewPlant,
+    })});
+    STATE.agentIntent = route.action || route.intent || "SEARCH";
+    STATE.agentIntentConfidence = Number(route.confidence || 0);
+    STATE.agentIntentReason = route.reason || "";
+    if(STATE.agentIntent === "SEARCH"){
+      const parsed = parseNaturalLanguage(text);
+      window._currentSearchConditions = parsed ? [...parsed] : null;
+      document.querySelector('input[name="matchMode"][value="fuzzy"]')?.click();
+      await doSearch();
+    } else if(STATE.agentIntent === "DISTRIBUTE"){
+      if(!STATE.currentBatch){ toast("请先接入并治理一批数据", "warn"); return; }
+      STATE.distributionInstruction = text;
+      STATE.distributionResult = null;
+      STATE.distributionPlan = await apiRequest("/intent", {method:"POST", body:JSON.stringify({
+        batch_id:STATE.currentBatch.batch_id, text, plant_code:STATE.viewPlant === "GROUP" ? undefined : STATE.viewPlant,
+      })});
+      STATE.distributionSelectedTasks = (STATE.distributionPlan.tasks || []).filter(task => task.selected).map(task => task.task_id);
+      toast(STATE.distributionPlan.question || "分发计划已生成，请选择任务", "success");
+    } else if(STATE.agentIntent === "GOVERN"){
+      STATE.agentPlan = await apiRequest("/agent/plan", {method:"POST", body:JSON.stringify({
+        batch_id:STATE.currentBatch?.batch_id, task:text, plant_code:STATE.viewPlant === "GROUP" ? undefined : STATE.viewPlant,
+      })});
+      toast("治理编排计划已生成", "success");
+    }
+  } catch(error){ toast("Agent 处理失败：" + error.message, "error"); }
+  finally { STATE.agentBusy = false; STATE.speechStatus = "语音会先转成文字，不会自动提交分发"; render(); }
+};
+
+let agentVoiceRecorder = null;
+let agentVoiceStream = null;
+let agentVoiceChunks = [];
+let agentVoiceMime = "audio/webm";
+let agentVoiceRecognition = null;
+let agentVoiceTimer = null;
+
+function updateAgentVoiceDom(label){
+  const button = $("#agentVoiceButton");
+  const status = $("#agentVoiceStatus");
+  if(button){ button.classList.toggle("active", Boolean(STATE.speechListening)); button.textContent = STATE.speechListening ? "■" : "🎙"; button.setAttribute("aria-pressed", String(Boolean(STATE.speechListening))); button.title = STATE.speechListening ? "停止录音" : "语音输入"; }
+  if(status && label) status.textContent = label;
+}
+
+function startBrowserSpeechRecognition(){
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!Recognition){ STATE.speechStatus = "当前浏览器不支持语音输入，请使用文字"; updateAgentVoiceDom(STATE.speechStatus); return; }
+  const recognition = new Recognition();
+  agentVoiceRecognition = recognition;
+  recognition.lang = "zh-CN"; recognition.interimResults = true; recognition.continuous = false;
+  STATE.speechListening = true; STATE.speechStatus = "浏览器语音识别中，请说话…"; updateAgentVoiceDom(STATE.speechStatus);
+  recognition.onresult = event => {
+    const text = [...event.results].map(result => result[0]?.transcript || "").join("").trim();
+    const input = $("#searchInput");
+    if(input && text){ input.value = text; STATE.agentPrompt = text; STATE.searchQuery = text; }
+    updateAgentVoiceDom(`已识别：${text || "正在听取"}`);
+  };
+  recognition.onerror = event => { STATE.speechStatus = `浏览器语音识别失败：${event.error || "unknown"}`; updateAgentVoiceDom(STATE.speechStatus); };
+  recognition.onend = () => { STATE.speechListening = false; agentVoiceRecognition = null; updateAgentVoiceDom(STATE.speechStatus || "语音已停止，请确认文字后提交"); };
+  recognition.start();
+}
+
+async function startQwenVoiceRecording(){
+  if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){ startBrowserSpeechRecognition(); return; }
+  try {
+    agentVoiceStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    const preferred = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+    agentVoiceMime = preferred;
+    agentVoiceRecorder = new MediaRecorder(agentVoiceStream, {mimeType:preferred});
+    agentVoiceChunks = [];
+    agentVoiceRecorder.ondataavailable = event => { if(event.data?.size) agentVoiceChunks.push(event.data); };
+    agentVoiceRecorder.onstop = async () => {
+      const blob = new Blob(agentVoiceChunks, {type:agentVoiceMime});
+      agentVoiceStream?.getTracks().forEach(track => track.stop()); agentVoiceStream = null; agentVoiceRecorder = null;
+      STATE.speechListening = false; STATE.speechStatus = "正在调用通义千问语音识别…"; updateAgentVoiceDom(STATE.speechStatus);
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "agent-voice.webm");
+        const payload = await apiRequest("/agent/transcribe", {method:"POST", body:form});
+        const text = payload.text || payload.transcript || "";
+        const input = $("#searchInput");
+        if(input && text){ input.value = text; STATE.agentPrompt = text; STATE.searchQuery = text; }
+        STATE.speechStatus = `通义千问已识别${text ? "，请确认文字后提交" : "空白内容"}`;
+        toast(text ? "语音已转成文字，请确认后提交" : "未识别到有效语音", text ? "success" : "warn");
+      } catch(error){
+        STATE.speechStatus = "通义语音不可用，已切换浏览器识别"; updateAgentVoiceDom(STATE.speechStatus);
+        startBrowserSpeechRecognition();
+        return;
+      }
+      updateAgentVoiceDom(STATE.speechStatus);
+    };
+    STATE.speechListening = true; STATE.speechStatus = "通义千问录音中，再次点击停止…"; updateAgentVoiceDom(STATE.speechStatus);
+    agentVoiceRecorder.start(250);
+    agentVoiceTimer = setTimeout(() => { if(agentVoiceRecorder?.state === "recording") agentVoiceRecorder.stop(); }, 60000);
+  } catch(error){ STATE.speechListening = false; STATE.speechStatus = "无法访问麦克风，已切换浏览器识别"; updateAgentVoiceDom(STATE.speechStatus); startBrowserSpeechRecognition(); }
+}
+
+window.toggleAgentVoice = function(){
+  if(STATE.speechListening){
+    if(agentVoiceRecorder?.state === "recording"){ clearTimeout(agentVoiceTimer); agentVoiceRecorder.stop(); }
+    else if(agentVoiceRecognition){ agentVoiceRecognition.stop(); }
+    return;
+  }
+  const qwenReady = Boolean(STATE.agentCapabilities?.speech?.qwen_asr_configured);
+  if(qwenReady) startQwenVoiceRecording(); else startBrowserSpeechRecognition();
+};
+
 window.doSearch = async function(){
-  const q = $("#searchInput").value.trim();
+  const q = $("#searchInput")?.value?.trim();
   if(!q){ toast("请输入检索词", "warn"); return; }
-  if(!STATE.masters.length && !STATE.reviews.length){ $("#searchResult").innerHTML = emptyState("📁","暂无主数据","请先在「批量接入」上传企业 CSV"); return; }
+  STATE.searchQuery = q; STATE.agentPrompt = q; STATE.agentIntent = "SEARCH";
   // 自然语言解析
   const parsed = parseNaturalLanguage(q);
   window._currentSearchConditions = parsed ? [...parsed] : null;
   renderConditionChips(parsed, "parsedConditions");
   const searched = await runSearch(q, parsed);
   if(searched === false) return;
+  STATE.searchResultHtml = $("#searchResult")?.innerHTML || "";
   STATE.searchHistory.unshift({ query:q, created_at:Date.now() });
   await dbClear("searchHistory");
   for(const row of STATE.searchHistory) await dbPut("searchHistory", row);
@@ -3078,7 +3923,7 @@ window.applyAdvFilter = function(){
 window.resetAdvFilter = function(){
   ["advCategory","advBrand","advMaterial","advDN","advPressure","advModel","advExclude"].forEach(id => { const el = $("#"+id); if(el) el.value = ""; });
   const conf = $("#advConfidence"); if(conf) conf.value = "0";
-  document.querySelectorAll('input[name="matchMode"]').forEach(r => r.checked = r.value === "and");
+  document.querySelectorAll('input[name="matchMode"]').forEach(r => r.checked = r.value === "fuzzy");
 };
 
 /* 检查是否有高级筛选条件 */
@@ -3182,8 +4027,17 @@ async function runSearch(q, parsed){
       const showingSuggestions = !response.results.length && Array.isArray(response.suggestions) && response.suggestions.length > 0;
       const sourceResults = showingSuggestions ? response.suggestions : response.results;
       const top = sourceResults.map(item => ({ m:item.master, score:item.score, reasons:item.reasons || [] }));
-      if(!top.length){
+      const knowledgeReferences = Array.isArray(response.knowledge_references) ? response.knowledge_references : [];
+      const knowledgeEvidenceHtml = knowledgeReferences.length ? `<div class="agent-knowledge-evidence">
+        <div class="agent-knowledge-head"><strong>📚 标准知识 RAG 依据</strong><span>已按登录角色、工厂范围和发布版本过滤 · Top ${knowledgeReferences.length}</span></div>
+        <div class="agent-knowledge-list">${knowledgeReferences.map(item => `<div class="agent-knowledge-item"><strong>${esc(item.category || item.title || "标准知识条目")}</strong><span>${esc(item.reference_id || item.clause_id || "-")} · ${esc(item.standard_version || item.version_label || "当前发布版")}</span><b>相关度 ${fmtPct(item.score || 0)}</b></div>`).join("")}</div>
+      </div>` : "";
+      if(!top.length && !knowledgeReferences.length){
         $("#searchResult").innerHTML = emptyState("🔍","未找到相似物料","可调整关键词或在「生命周期」中创建新物料申请");
+        return true;
+      }
+      if(!top.length){
+        $("#searchResult").innerHTML = `<div class="search-status"><span>未找到可直接使用的黄金主数据，但检索到 <strong style="color:var(--pu)">${knowledgeReferences.length}</strong> 条标准依据</span><span style="color:var(--t3);margin-left:auto">可依据标准新建或补充物料申请</span></div>${knowledgeEvidenceHtml}${emptyState("🔎","暂无匹配主数据","可调整物料条件，或依据上述标准发起新物料申请")}`;
         return true;
       }
       const matchModeText = matchMode === "and" ? "全部满足" : matchMode === "or" ? "任一满足" : "模糊匹配";
@@ -3193,6 +4047,7 @@ async function runSearch(q, parsed){
           <span>${showingSuggestions ? "💡 未找到完全匹配，推荐" : "🔎 共匹配"} <strong style="color:var(--pl)">${showingSuggestions ? response.suggestion_total : response.total}</strong> 条${showingSuggestions ? "相近候选" : "主数据"}，显示 Top ${top.length}</span>
           <span style="color:var(--t3);margin-left:auto">${showingSuggestions ? "候选结果仅满足部分条件，请核对后使用" : `匹配模式: ${matchModeText}${filterSummary}`}</span>
         </div>
+        ${knowledgeEvidenceHtml}
         ${top.map(result => `
           <div class="search-hit">
             <div class="search-hit-head">
@@ -3490,7 +4345,7 @@ function renderQuality(){
         <div class="kpi-grid">
           <div class="kpi k-blue"><div class="kpi-emoji">📊</div><div class="kpi-label">综合评分</div><div class="kpi-value" style="color:${o.score>=80?'var(--s)':o.score>=60?'var(--w)':'var(--d)'}">${o.score}%</div><div class="kpi-sub">五维启发式均值</div></div>
           <div class="kpi k-green"><div class="kpi-emoji">✓</div><div class="kpi-label">完整性</div><div class="kpi-value">${o.completeness}%</div><div class="kpi-sub">必要字段非空率</div></div>
-          <div class="kpi k-amber"><div class="kpi-emoji">📝</div><div class="kpi-label">准确性</div><div class="kpi-value">${o.accuracy}%</div><div class="kpi-sub">编码+时间格式合规率</div></div>
+          <div class="kpi k-amber"><div class="kpi-emoji">📝</div><div class="kpi-label">准确性代理</div><div class="kpi-value">${o.accuracy}%</div><div class="kpi-sub">结构异常代理分，非人工准确率</div></div>
           <div class="kpi k-cyan"><div class="kpi-emoji">🔗</div><div class="kpi-label">一致性</div><div class="kpi-value">${o.consistency}%</div><div class="kpi-sub">同名物料字段一致</div></div>
         </div>
       </div>
@@ -3542,7 +4397,7 @@ function qualityCard(name, sys){
       </div>
       <div class="q-info">
         <div class="q-name">${esc(name)} · ${count} 条</div>
-        <div class="q-dim">完整性 ${completeness}% · 准确性 ${accuracy}% · 一致性 ${consistency}%</div>
+        <div class="q-dim">完整性 ${completeness}% · 准确性代理 ${accuracy}% · 一致性 ${consistency}%</div>
       </div>
     </div>
   `;
@@ -3582,10 +4437,11 @@ window.exportQualityReport = function(){
     </div>
     <h2>综合评分</h2>
     <div class="score">${qr.overall?.score || 0}%</div>
-    <p>完整性 ${qr.overall?.completeness || 0}% · 准确性 ${qr.overall?.accuracy || 0}% · 一致性 ${qr.overall?.consistency || 0}%</p>
+    <p>完整性 ${qr.overall?.completeness || 0}% · 准确性代理 ${qr.overall?.accuracy || 0}% · 一致性 ${qr.overall?.consistency || 0}%</p>
+    <p><small>准确性代理由结构异常统计生成，不等同于人工真值集准确率。</small></p>
     <h2>数据源评分</h2>
     <table><tr><th>数据源</th><th>记录数</th><th>完整性</th><th>准确性</th><th>一致性</th><th>综合</th></tr>
-    ${Object.entries(qr.systems || {}).map(([n,s]) => `<tr><td>${esc(n)}</td><td>${s.count}</td><td>${s.completeness}%</td><td>${s.accuracy}%</td><td>${s.consistency}%</td><td><strong>${s.score}%</strong></td></tr>`).join("")}
+    ${Object.entries(qr.systems || {}).map(([n,s]) => `<tr><td>${esc(n)}</td><td>${s.recordCount ?? s.count ?? 0}</td><td>${s.completeness}%</td><td>${s.accuracy}%</td><td>${s.consistency}%</td><td><strong>${s.score}%</strong></td></tr>`).join("")}
     </table>
     <h2>问题清单</h2>
     ${(qr.issues || []).map(i => `<div class="issue"><strong>[${esc(i.system)}]</strong> ${esc(i.text)}<br/>→ ${esc(i.action)}</div>`).join("") || "<p>无</p>"}
@@ -3856,19 +4712,8 @@ function renderDistribute(){
   const feedbackMasters = STATE.masters.filter(master => feedbackCodes.has(master.mdm_code));
   const verification = STATE.auditChain?.verification || STATE.auditChain || { valid:true, block_count:0 };
   const recentBlocks = STATE.auditChain?.blocks || [];
-  const sample = approvedMasters[0] || {};
-  const naturalExample = `帮我把【品牌 ${sample.brand || "SKF"}】【型号 ${sample.model || "6312"}】【备品备件名称 ${sample.standard_name || "深沟球轴承"}】分别发往【ERP系统】【上海厂】`;
-  const naturalText = STATE.distributionInstruction || naturalExample;
-  const naturalPlan = STATE.distributionPlan;
   return `
     <div class="page">
-      <div class="card">
-        <div class="card-head"><div class="card-title"><span class="icon" style="background:rgba(59,130,246,.12);color:var(--pl)">AI</span>自然语言跨系统分发 Agent</div><span class="tag tag-info">先解析计划 · 确认后执行</span></div>
-        <p style="font-size:11px;color:var(--t3);margin-bottom:10px">输入品牌、型号、备品备件名称、目标业务系统与工厂。Agent 只分发匹配到的黄金主数据，并输出任务载荷、分发结果和哈希凭证。</p>
-        <textarea class="textarea" id="distributionInstruction" style="min-height:56px" oninput="STATE.distributionInstruction=this.value;STATE.distributionPlan=null">${esc(naturalText)}</textarea>
-        <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap"><button class="btn btn-primary" onclick="planNaturalDistribution()" ${STATE.distributionBusy ? "disabled" : ""}>解析分发计划</button>${naturalPlan?.requires_confirmation ? `<button class="btn btn-success" onclick="confirmNaturalDistribution()" ${STATE.distributionBusy ? "disabled" : ""}>确认并执行 ${naturalPlan.task_count} 个任务</button>` : ""}</div>
-        ${naturalPlan ? `<div class="agent-result" style="margin-top:10px"><strong>${esc(naturalPlan.question || "解析完成")}</strong><div style="margin-top:6px;color:var(--t2)">筛选：品牌 ${esc(naturalPlan.filters?.brand || "不限")} · 型号 ${esc(naturalPlan.filters?.model || "不限")} · 名称 ${esc(naturalPlan.filters?.material_name || "不限")}</div><div style="margin-top:4px;color:var(--t2)">目标：${(naturalPlan.target_systems || []).map(esc).join(" / ") || "未识别"} → ${(naturalPlan.target_plants || []).map(code => esc(PLANT_NAMES[code] || code)).join(" / ")}</div>${naturalPlan.warning ? `<div style="color:var(--w);margin-top:6px">${esc(naturalPlan.warning)}</div>` : ""}${(naturalPlan.matched_masters || []).length ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">${naturalPlan.matched_masters.map(item => `<span class="tag tag-ok">${esc(item.mdm_code)} · ${esc(item.standard_name)}</span>`).join("")}</div>` : ""}</div>` : ""}
-      </div>
       <div class="card">
         <div class="card-title"><span class="icon" style="background:rgba(139,92,246,.12);color:var(--pu)">📤</span>跨系统分发中心 <span style="font-weight:400;font-size:11px;color:var(--t3);margin-left:6px">演示版 · 模拟分发任务登记</span></div>
         <p style="font-size:11px;color:var(--t3);margin-bottom:14px">
@@ -3963,9 +4808,11 @@ function renderDistribute(){
 }
 
 window.planNaturalDistribution = async function(){
+  if(!hasPermission("ai.use")){ toast("当前账号无 AI 使用权限", "error"); return; }
   const text = $("#distributionInstruction")?.value?.trim();
   if(!text || !STATE.currentBatch){ toast("请输入分发指令并先完成数据治理", "warn"); return; }
   STATE.distributionInstruction = text;
+  STATE.distributionResult = null;
   STATE.distributionBusy = true;
   try {
     STATE.distributionPlan = await apiRequest("/intent", { method:"POST", body:JSON.stringify({
@@ -3977,18 +4824,23 @@ window.planNaturalDistribution = async function(){
 };
 
 window.confirmNaturalDistribution = async function(){
+  if(!hasPermission("distribution.execute")){ toast("当前账号无跨系统分发执行权限", "error"); return; }
   const plan = STATE.distributionPlan;
   if(STATE.distributionBusy) return;
   if(!plan?.requires_confirmation || !STATE.currentBatch){ toast("请先解析有效的分发计划", "warn"); return; }
+  const selectedTasks = (plan.tasks || []).filter(task => (STATE.distributionSelectedTasks || []).includes(task.task_id) && task.eligible !== false);
+  if(!selectedTasks.length){ toast("请至少选择一个可执行任务", "warn"); return; }
   STATE.distributionBusy = true;
   render();
   try {
     const result = await apiRequest("/distribute", { method:"POST", body:JSON.stringify({
       batch_id:STATE.currentBatch.batch_id, instruction:STATE.distributionInstruction,
       target_systems:plan.target_systems, target_plants:plan.target_plants,
-      filters:plan.filters, mode:plan.mode, confirmed:true, actor:"自然语言分发Agent"
+      filters:plan.filters, mode:plan.mode, confirmed:true,
+      master_codes:[...new Set(selectedTasks.map(task => task.mdm_code))],
+      selected_tasks:selectedTasks,
     })});
-    STATE.distributionPlan = null;
+    STATE.distributionResult = result;
     await loadServerState();
     toast(`分发完成：${result.success_count} 个任务成功，已生成 ${result.artifacts?.length || 0} 个可验证成果`, "success", 5000);
   } catch(error){ toast("分发执行失败：" + error.message, "error"); }
@@ -4065,9 +4917,24 @@ window.inspectGraphNode = function(nodeId){
     <div style="display:grid;gap:6px;margin-top:12px">${relations.map(item => `<div class="vector-hit"><span class="tag tag-info">${esc(item.relation)}</span> <strong style="margin-left:6px">${esc(item.neighbor.label || item.neighbor.entity_id || item.neighbor.id)}</strong><div style="color:var(--t3);margin-top:3px">${esc(item.neighbor.node_type || "UNKNOWN")}</div></div>`).join("") || `<div style="color:var(--t3)">无直接关系</div>`}</div>`);
 };
 
+window.switchGraphView = function(view){
+  STATE.graphView = view === "relation" ? "relation" : "sankey";
+  render();
+};
+
+window.selectGraphNode = function(nodeId){
+  const node = (STATE.graphData?.nodes || []).find(item => item.id === nodeId);
+  if(!node) return;
+  STATE.selectedGraphNodeId = nodeId;
+  const panel = $("#graphNodeDetail");
+  if(panel) panel.innerHTML = renderGraphNodeDetail(nodeId);
+  const stage = $(".graph-stage-large");
+  if(stage) stage.innerHTML = renderGovernanceGraph(STATE.graphData);
+};
+
 document.addEventListener("click", event => {
   const graphNode = event.target?.closest?.('svg[aria-label="主数据关系血缘与哈希审计链图谱"] g[data-node]');
-  if(graphNode) window.inspectGraphNode(decodeURIComponent(graphNode.dataset.node || ""));
+  if(graphNode) window.selectGraphNode(decodeURIComponent(graphNode.dataset.node || ""));
 });
 
 window.verifyAuditChain = async function(){
@@ -4350,6 +5217,7 @@ function render(){
   let html = pages[STATE.currentPage] || pages.home;
   // 给所有 .page 加上 on class（页面切换由 app.innerHTML 重置）
   html = html.replace(/<div class="page">/g, '<div class="page on">');
+  html += renderComplianceDrawer();
   $("#app").innerHTML = html;
   bindIngestZone();
   bindIngestActions();
@@ -4376,17 +5244,19 @@ function bindIngestActions(){
   if(applyBtn) applyBtn.addEventListener("click", () => applyMappingAndGovern());
 }
 
-function switchPage(name){
+async function switchPage(name){
   STATE.currentPage = name;
   $$(".tab").forEach(t => t.classList.toggle("on", t.dataset.page === name));
   render();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   applyTheme(document.documentElement.dataset.theme);
   $$(".tab").forEach(t => t.addEventListener("click", () => switchPage(t.dataset.page)));
-  loadServerState()
+  document.getElementById("accountButton")?.addEventListener("click", showAccountPanel);
+  ensureAuthenticated()
+    .then(() => loadServerState())
     .catch(async err => {
       STATE.backendOnline = false;
       console.error("Flask backend unavailable:", err);
@@ -4414,6 +5284,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 /* ===================== 数据管理工具 ===================== */
 window.exportAllBackup = async function(){
+  if(!hasPermission("data.purge")){ toast("当前账号无缓存导出权限", "error"); return; }
   const data = {
     schema: "ai-mdm-enterprise-demo-v1",
     exported_at: new Date().toISOString(),
@@ -4439,6 +5310,7 @@ window.exportAllBackup = async function(){
 };
 
 window.importBackup = function(input){
+  if(!hasPermission("data.purge")){ toast("当前账号无备份恢复权限", "error"); return; }
   const file = input.files[0];
   if(!file) return;
   const reader = new FileReader();
@@ -4464,6 +5336,7 @@ window.importBackup = function(input){
 };
 
 window.clearAllData = async function(){
+  if(!hasPermission("data.purge")){ toast("当前账号无数据清理权限", "error"); return; }
   if(!confirm("确定清空 Flask 数据库与本地缓存？此操作不可恢复。")) return;
   if(!confirm("再次确认：将删除全部批次、主数据、审核、生命周期和分发日志。")) return;
   try {
@@ -4480,7 +5353,7 @@ window.clearAllData = async function(){
 
 </script>
 
-<div class="data-tools">
+<div class="data-tools" id="dataTools" style="display:none">
   <button class="btn btn-secondary btn-sm" onclick="exportAllBackup()">⬇ 导出缓存</button>
   <button class="btn btn-ghost btn-sm" onclick="clearAllData()">清空全部</button>
 </div>

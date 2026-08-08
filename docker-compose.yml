@@ -5,13 +5,22 @@ services:
       dockerfile: backend/Dockerfile
       args:
         INSTALL_OCR: "${MDM_INSTALL_OCR:-0}"
-    image: mai-master:4.3
+    image: mai-master:5.1
     container_name: mai-master
     restart: unless-stopped
     ports:
       - "${MDM_PORT:-5000}:5000"
     environment:
       MDM_PRODUCTION: "1"
+      MDM_SECURITY_MODE: "${MDM_SECURITY_MODE:-enterprise}"
+      MDM_SECURITY_DIR: "/app/data"
+      MDM_SESSION_SECRET: "${MDM_SESSION_SECRET:-}"
+      MDM_PASSWORD_GROUP_ADMIN: "${MDM_PASSWORD_GROUP_ADMIN:-}"
+      MDM_PASSWORD_GROUP_APPROVER: "${MDM_PASSWORD_GROUP_APPROVER:-}"
+      MDM_PASSWORD_SHANGHAI_STEWARD: "${MDM_PASSWORD_SHANGHAI_STEWARD:-}"
+      MDM_PASSWORD_COMPLIANCE_AUDITOR: "${MDM_PASSWORD_COMPLIANCE_AUDITOR:-}"
+      MDM_RAG_ENABLED: "${MDM_RAG_ENABLED:-1}"
+      MDM_RAG_SOURCE_PATH: "/app/SY_T5497-2018备品备件分类树(1).xlsx"
       MDM_AUTH_USER: "${MDM_AUTH_USER:-admin}"
       MDM_AUTH_PASSWORD: "${MDM_AUTH_PASSWORD:-}"
       DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"

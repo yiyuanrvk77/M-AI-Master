@@ -37,9 +37,9 @@ echo ============================================
 echo   M-AI Master - Enterprise Launcher
 echo ============================================
 
-powershell -NoProfile -Command "try { $r=Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if($r.ready -eq $true -and $r.version -eq '4.3'){exit 0}; exit 1 } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $r=Invoke-RestMethod -Uri '%HEALTH_URL%' -TimeoutSec 2; if($r.ready -eq $true -and $r.version -eq '5.0'){exit 0}; exit 1 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
-    echo M-AI Master 4.3 is already running.
+    echo M-AI Master 5.0 is already running.
     echo Local: %LOCAL_URL%
     if not defined MDM_NO_BROWSER start "" "%LOCAL_URL%"
     exit /b 0

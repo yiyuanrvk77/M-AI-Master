@@ -19,9 +19,12 @@ BACKEND_DIR = PROJECT_DIR / "backend"
 SAMPLE_CSV = PROJECT_DIR / "备品备件脏数据.csv"
 TEST_DIR = tempfile.TemporaryDirectory(prefix="mai-master-chaos-")
 os.environ["MDM_DB_PATH"] = str(Path(TEST_DIR.name) / "chaos.db")
+os.environ["MDM_SECURITY_MODE"] = "open"
+os.environ["MDM_SECURITY_DIR"] = TEST_DIR.name
 os.environ.pop("MDM_AUTH_PASSWORD", None)
 for key_name in ("DASHSCOPE_API_KEY", "ZHIPU_API_KEY", "OPENAI_API_KEY"):
-    os.environ.pop(key_name, None)
+    # Keep degradation tests offline even when the developer has a local .env.
+    os.environ[key_name] = ""
 sys.path.insert(0, str(BACKEND_DIR))
 
 import app as backend  # noqa: E402
